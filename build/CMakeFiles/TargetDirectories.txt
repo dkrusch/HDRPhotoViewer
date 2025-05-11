@@ -1,0 +1,3 @@
+C:/HDRViewer/build/CMakeFiles/HDRViewer.dir
+C:/HDRViewer/build/CMakeFiles/ALL_BUILD.dir
+C:/HDRViewer/build/CMakeFiles/ZERO_CHECK.dir
