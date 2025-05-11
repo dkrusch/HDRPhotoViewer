@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"C:/HDRViewer/build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}
