@@ -45,13 +45,41 @@ int                          g_imgW = 0, g_imgH = 0;
 
 // Full‐screen triangle shaders (will draw your image later)
 static const char* g_VS = R"(
-struct VSOut { float4 pos : SV_POSITION; float2 uv : TEXCOORD; };
-VSOut VSMain(uint id : SV_VertexID) {
-    float2 pos[3] = { float2(-1,-1), float2(-1,3), float2(3,-1) };
-    VSOut o; o.pos = float4(pos[id],0,1);
-    o.uv  = (o.pos.xy * 0.5f) + 0.5f;
+cbuffer ScaleCB : register(b0)
+{
+    float scaleX;
+    float scaleY;
+};
+
+struct VSOut {
+    float4 pos : SV_POSITION;
+    float2 uv  : TEXCOORD;
+};
+
+VSOut VSMain(uint vid : SV_VertexID)
+{
+    // 4 corners of a rectangle centered at (0,0) scaled by scaleX/scaleY
+    float2 quadPos[4] = {
+        float2(-scaleX, -scaleY),  // bottom-left
+        float2( scaleX, -scaleY),  // bottom-right
+        float2(-scaleX,  scaleY),  // top-left
+        float2( scaleX,  scaleY)   // top-right
+    };
+    // Corresponding UVs
+    float2 quadUV[4] = {
+        float2(0, 1),
+        float2(1, 1),
+        float2(0, 0),
+        float2(1, 0)
+    };
+
+    VSOut o;
+    o.pos = float4(quadPos[vid], 0, 1);
+    o.uv  = quadUV[vid];
     return o;
-})";
+}
+)";
+
 
 static const char* g_PS = R"(
 struct VSOut { float4 pos : SV_POSITION; float2 uv : TEXCOORD; };
@@ -61,9 +89,8 @@ SamplerState samp : register(s0);
 
 float4 PSMain(VSOut vsIn) : SV_TARGET
 {
-    // Flip V so (0,0) is top-left in texture space
-    float2 uv = float2(vsIn.uv.x, 1.0f - vsIn.uv.y);
-    return tex.Sample(samp, uv);
+    // sample with the UVs we generated in the VS
+    return tex.Sample(samp, vsIn.uv);
 }
 )";
 
@@ -152,10 +179,25 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
     ofn.lpstrFile   = szFile;
     ofn.nMaxFile    = MAX_PATH;
     if (GetOpenFileNameW(&ofn)) {
-    bool ok = LoadImage(szFile);
-    // MessageBoxW(nullptr,
-    //     ok ? L"LoadImage returned true" : L"LoadImage returned false",
-    //     L"Debug", MB_OK);
+        bool ok = LoadImage(szFile);
+        MessageBoxW(nullptr,
+            ok ? L"LoadImage returned true" : L"LoadImage returned false",
+            L"Debug", MB_OK);
+    }
+
+    int screenW = GetSystemMetrics(SM_CXSCREEN);
+    int screenH = GetSystemMetrics(SM_CYSCREEN);
+
+    // Compute letter-box scales:
+    float imgAspect    = float(g_imgW) / float(g_imgH);
+    float screenAspect = float(screenW) / float(screenH);
+    float scaleX = 1, scaleY = 1;
+    if (imgAspect > screenAspect) {
+        // image is wider → pillar‐box
+        scaleY = screenAspect / imgAspect;
+    } else {
+        // image is taller → letter‐box
+        scaleX = imgAspect / screenAspect;
     }
 
 
@@ -166,8 +208,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
     wc.lpszClassName = L"HDRViewerClass";
     RegisterClass(&wc);
 
-    int screenW = GetSystemMetrics(SM_CXSCREEN);
-    int screenH = GetSystemMetrics(SM_CYSCREEN);
+    
 
     // 2) Create a WS_POPUP window at full-screen size:
     HWND hwnd = CreateWindowEx(
@@ -273,39 +314,47 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
     // 10) Create root signature
     {
         D3D12_DESCRIPTOR_RANGE range{};
-        range.RangeType                         =
-          D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        range.RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
         range.NumDescriptors                    = 1;
         range.BaseShaderRegister                = 0;
         range.RegisterSpace                     = 0;
-        range.OffsetInDescriptorsFromTableStart =
-          D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+        range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-        D3D12_ROOT_PARAMETER param{};
-        param.ParameterType                       =
-          D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        param.DescriptorTable.NumDescriptorRanges = 1;
-        param.DescriptorTable.pDescriptorRanges   = &range;
-        param.ShaderVisibility                    =
-          D3D12_SHADER_VISIBILITY_PIXEL;
+        // 1) SRV parameter (t0)
+        D3D12_ROOT_PARAMETER srvParam{};
+        srvParam.ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        srvParam.DescriptorTable.NumDescriptorRanges = 1;
+        srvParam.DescriptorTable.pDescriptorRanges   = &range;
+        srvParam.ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
 
-        D3D12_STATIC_SAMPLER_DESC samp{};
-        samp.Filter         = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-        samp.AddressU       = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-        samp.AddressV       = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-        samp.AddressW       = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-        samp.ShaderRegister = 0;
-        samp.RegisterSpace  = 0;
-        samp.ShaderVisibility =
-          D3D12_SHADER_VISIBILITY_PIXEL;
+        // 2) 32‐bit constants for scaleX/scaleY (b0)
+        D3D12_ROOT_PARAMETER scaleParam{};
+        scaleParam.ParameterType                    = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        scaleParam.Constants.Num32BitValues         = 2;
+        scaleParam.Constants.ShaderRegister         = 0; // b0
+        scaleParam.Constants.RegisterSpace          = 0;
+        scaleParam.ShaderVisibility                 = D3D12_SHADER_VISIBILITY_VERTEX;
 
+        // 3) Static sampler as before
+        D3D12_STATIC_SAMPLER_DESC sampDesc{};
+        sampDesc.Filter         = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+        sampDesc.AddressU       = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        sampDesc.AddressV       = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        sampDesc.AddressW       = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        sampDesc.ShaderRegister = 0;
+        sampDesc.RegisterSpace  = 0;
+        sampDesc.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        // 4) Pack into array
+        D3D12_ROOT_PARAMETER params[2] = { srvParam, scaleParam };
+
+        // 5) Build & serialize
         D3D12_ROOT_SIGNATURE_DESC rsDesc{};
-        rsDesc.NumParameters     = 1;
-        rsDesc.pParameters       = &param;
+        rsDesc.NumParameters     = 2;
+        rsDesc.pParameters       = params;
         rsDesc.NumStaticSamplers = 1;
-        rsDesc.pStaticSamplers   = &samp;
-        rsDesc.Flags             =
-          D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+        rsDesc.pStaticSamplers   = &sampDesc;
+        rsDesc.Flags             = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
         ComPtr<ID3DBlob> rsBlob, errBlob;
         D3D12SerializeRootSignature(
@@ -518,13 +567,21 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
             // 2) Determine clear color
             FLOAT clearCol[4];
             if (g_pixels.empty()) {
-                clearCol[0] = 0.0f; clearCol[1] = 0.2f;
-                clearCol[2] = 0.4f; clearCol[3] = 1.0f;
+                // default “no image” color—keep as is
+                clearCol[0] = 0.0f;
+                clearCol[1] = 0.2f;
+                clearCol[2] = 0.4f;
+                clearCol[3] = 1.0f;
             } else {
-                clearCol[0] = 1.0f; clearCol[1] = 0.0f;
-                clearCol[2] = 1.0f; clearCol[3] = 1.0f;
+                // new dark slate tone
+                clearCol[0] = 0.05f;  // almost black red
+                clearCol[1] = 0.07f;  // very dark green
+                clearCol[2] = 0.10f;  // hint of blue
+                clearCol[3] = 1.0f;
             }
+            // cl->ClearRenderTargetView(rtvHandle, clearCol, 0, nullptr);
 
+            
             // 3) Transition back‐buffer into RENDER_TARGET
             cl->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
                 g_renderTargets[g_frameIndex].Get(),
@@ -562,12 +619,21 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
             ID3D12DescriptorHeap* heaps[] = { g_srvHeap.Get() };
             cl->SetDescriptorHeaps(_countof(heaps), heaps);
             cl->SetGraphicsRootSignature(g_rootSig.Get());
-            cl->SetPipelineState(g_pipelineState.Get());
-            cl->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            cl->SetPipelineState       (g_pipelineState.Get());
+
+            // slot 0 → texture SRV
             cl->SetGraphicsRootDescriptorTable(
-                0, g_srvHeap->GetGPUDescriptorHandleForHeapStart()
+                0,
+                g_srvHeap->GetGPUDescriptorHandleForHeapStart()
             );
-            cl->DrawInstanced(3, 1, 0, 0);
+
+            // slot 1 → two 32-bit constants (scaleX, scaleY)
+            float scaleVals[2] = { scaleX, scaleY };
+            cl->SetGraphicsRoot32BitConstants(1, 2, scaleVals, 0);
+
+            // draw full-screen triangle
+            cl->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+            cl->DrawInstanced(4, 1, 0, 0);
 
             // 8) Transition back into PRESENT
             cl->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
