@@ -13,6 +13,9 @@
 #include <chrono>
 #include <thread>
 #include <algorithm>        // for std::clamp
+#include <filesystem>       // C++17
+#include <cstdio>           // for FILE*
+
 
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -41,6 +44,10 @@ HANDLE                       g_fenceEvent = nullptr;
 
 
 
+
+// ---- new globals for “next/prev” support ----
+static std::vector<std::wstring> g_fileList;
+static int                       g_currentFileIndex = 0;
 // Image data globals
 std::vector<uint8_t>         g_pixels;
 int                          g_imgW = 0, g_imgH = 0;
@@ -123,6 +130,152 @@ inline void ThrowIfFailed(HRESULT hr) {
     }
 }
 
+void CreateTextureFromPixels()
+{
+    if (g_pixels.empty()) return;
+
+    // 1) Describe the texture
+    D3D12_RESOURCE_DESC texDesc = {};
+    texDesc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    texDesc.Width            = UINT64(g_imgW);
+    texDesc.Height           = UINT(g_imgH);
+    texDesc.DepthOrArraySize = 1;
+    texDesc.MipLevels        = 1;
+    texDesc.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texDesc.SampleDesc.Count = 1;
+
+    // 2) Create default-heap texture
+    ComPtr<ID3D12Resource> tex;
+    ThrowIfFailed(g_device->CreateCommittedResource(
+        &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
+        D3D12_HEAP_FLAG_NONE,
+        &texDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        nullptr,
+        IID_PPV_ARGS(&tex)
+    ));
+
+    // 3) Create upload-heap
+    UINT64 uploadSize = GetRequiredIntermediateSize(tex.Get(), 0, 1);
+    ComPtr<ID3D12Resource> uploadHeap;
+    ThrowIfFailed(g_device->CreateCommittedResource(
+        &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+        D3D12_HEAP_FLAG_NONE,
+        &CD3DX12_RESOURCE_DESC::Buffer(uploadSize),
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(&uploadHeap)
+    ));
+
+    // 4) Prepare the subresource
+    D3D12_SUBRESOURCE_DATA sub = {};
+    sub.pData      = g_pixels.data();
+    sub.RowPitch   = SIZE_T(g_imgW) * 4;
+    sub.SlicePitch = sub.RowPitch * g_imgH;
+
+    // 5) Record copy & barrier
+    ComPtr<ID3D12CommandAllocator> tmpAlloc;
+    ThrowIfFailed(g_device->CreateCommandAllocator(
+        D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&tmpAlloc)
+    ));
+    ComPtr<ID3D12GraphicsCommandList> tmpList;
+    ThrowIfFailed(g_device->CreateCommandList(
+        0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+        tmpAlloc.Get(), nullptr,
+        IID_PPV_ARGS(&tmpList)
+    ));
+    UpdateSubresources(tmpList.Get(), tex.Get(), uploadHeap.Get(),
+                       0, 0, 1, &sub);
+    tmpList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+        tex.Get(),
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+    ));
+    ThrowIfFailed(tmpList->Close());
+
+    // 6) Execute & fence-sync
+    g_cmdQueue->ExecuteCommandLists(1,
+        reinterpret_cast<ID3D12CommandList* const*>(tmpList.GetAddressOf())
+    );
+    g_fenceValue++;
+    ThrowIfFailed(g_cmdQueue->Signal(g_fence.Get(), g_fenceValue));
+    ThrowIfFailed(g_fence->SetEventOnCompletion(g_fenceValue, g_fenceEvent));
+    WaitForSingleObject(g_fenceEvent, INFINITE);
+
+    // 7) Create the SRV
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Format                  = texDesc.Format;
+    srvDesc.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels     = 1;
+    g_device->CreateShaderResourceView(
+        tex.Get(), &srvDesc,
+        g_srvHeap->GetCPUDescriptorHandleForHeapStart()
+    );
+
+    // 8) Store globally
+    g_texture = tex;
+}
+
+// ------------------------------------------------
+// Load an image from disk into g_pixels, g_imgW, g_imgH
+bool LoadImage(const std::wstring& wpath) {
+    // 1) Open the file as wide-char
+    FILE* file = nullptr;
+    if (_wfopen_s(&file, wpath.c_str(), L"rb") != 0 || !file) {
+        MessageBoxW(nullptr,
+                    L"Failed to open image file",
+                    wpath.c_str(),
+                    MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    // 2) Let STB read from that FILE*
+    int channels = 0;
+    unsigned char* data = stbi_load_from_file(
+        file,
+        &g_imgW, &g_imgH,
+        &channels, 4
+    );
+    fclose(file);
+
+    // 3) Error-report if it failed
+    if (!data) {
+        const char* err = stbi_failure_reason();
+        int wlen = MultiByteToWideChar(
+            CP_UTF8, 0,
+            err, -1,
+            nullptr, 0
+        );
+        std::wstring werr(wlen, L'\0');
+        MultiByteToWideChar(
+            CP_UTF8, 0,
+            err, -1,
+            &werr[0], wlen
+        );
+        MessageBoxW(nullptr,
+                    werr.c_str(),
+                    L"LoadImage Error",
+                    MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    // 4) Copy into your pixel buffer
+    size_t sz = size_t(g_imgW) * g_imgH * 4;
+    try {
+        g_pixels.assign(data, data + sz);
+    } catch (const std::bad_alloc&) {
+        MessageBoxW(nullptr,
+                    L"Out of memory while copying image",
+                    L"LoadImage Error",
+                    MB_OK | MB_ICONERROR);
+        stbi_image_free(data);
+        return false;
+    }
+    stbi_image_free(data);
+
+    return true;
+}
 
 // Forward‐declare Win32 window proc
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
@@ -163,6 +316,41 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
             PostQuitMessage(0);
             return 0;
         }
+        if ((wP == VK_RIGHT || wP == VK_LEFT) && !g_fileList.empty()) {
+            int dir = (wP == VK_RIGHT) ? +1 : -1;
+            int n   = int(g_fileList.size());
+            g_currentFileIndex = (g_currentFileIndex + dir + n) % n;
+
+            if (LoadImage(g_fileList[g_currentFileIndex])) {
+                // Recompute aspect‐ratio letterboxing
+                float imgAspect    = float(g_imgW) / float(g_imgH);
+                float screenAspect = float(g_screenW) / float(g_screenH);
+                g_baseScaleX = g_baseScaleY = 1.0f;
+                if (imgAspect > screenAspect) {
+                    // image is wider → pillarbox vertically
+                    g_baseScaleY = screenAspect / imgAspect;
+                } else {
+                    // image taller → letterbox horizontally
+                    g_baseScaleX = imgAspect / screenAspect;
+                }
+                // Reset zoom & pan
+                g_zoom        = g_targetZoom = 1.0f;
+                g_offX        = g_targetOffX = 0.0f;
+                g_offY        = g_targetOffY = 0.0f;
+
+                // Upload to GPU
+                CreateTextureFromPixels();
+            }
+            return 0;
+        }
+        if (wP == 'R') {
+            // Reset zoom & pan
+            g_zoom        = g_targetZoom = 1.0f;
+            g_offX        = g_targetOffX = 0.0f;
+            g_offY        = g_targetOffY = 0.0f;
+            return 0;
+        }
+
         break;
     }
     
@@ -170,66 +358,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
     }
     return DefWindowProc(hWnd, msg, wP, lP);
 }
-
-// ------------------------------------------------
-// Load an image from disk into g_pixels, g_imgW, g_imgH
-bool LoadImage(const std::wstring& path) {
-    // 1) Convert UTF-16 to UTF-8
-    int len = WideCharToMultiByte(CP_UTF8, 0,
-        path.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (len <= 0) {
-        MessageBoxW(nullptr,
-            L"Failed to convert file path to UTF-8",
-            L"LoadImage Error",
-            MB_OK | MB_ICONERROR);
-        return false;
-    }
-    std::string u8(len, '\0');
-    WideCharToMultiByte(CP_UTF8, 0,
-        path.c_str(), -1,
-        &u8[0], len,
-        nullptr, nullptr);
-
-    // 2) Load with stb_image
-    int channels = 0;
-    unsigned char* data = stbi_load(
-        u8.c_str(), &g_imgW, &g_imgH, &channels, 4);
-    if (!data) {
-        const char* err = stbi_failure_reason();
-        if (!err) err = "Unknown error";
-        // Convert err (UTF-8) to UTF-16 for MessageBoxW
-        int wlen = MultiByteToWideChar(
-            CP_UTF8, 0, err, -1, nullptr, 0
-        );
-        std::wstring werr(wlen, L'\0');
-        MultiByteToWideChar(
-            CP_UTF8, 0, err, -1,
-            &werr[0], wlen
-        );
-        MessageBoxW(nullptr,
-            werr.c_str(),
-            L"LoadImage Error",
-            MB_OK | MB_ICONERROR);
-        return false;
-    }
-
-    // 3) Copy into the global buffer
-    size_t sz = size_t(g_imgW) * g_imgH * 4;
-    try {
-        g_pixels.assign(data, data + sz);
-    } catch (const std::bad_alloc&) {
-        MessageBoxW(nullptr,
-            L"Out of memory while copying image",
-            L"LoadImage Error",
-            MB_OK | MB_ICONERROR);
-        stbi_image_free(data);
-        return false;
-    }
-
-    stbi_image_free(data);
-    return true;
-}
-
 
 // ------------------------------------------------
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
@@ -240,11 +368,50 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
     ofn.lpstrFilter = L"Images\0*.jpg;*.png\0All Files\0*.*\0";
     ofn.lpstrFile   = szFile;
     ofn.nMaxFile    = MAX_PATH;
+    
+    // if (GetOpenFileNameW(&ofn)) {
+    //     bool ok = LoadImage(szFile);
+    //     MessageBoxW(nullptr,
+    //         ok ? L"LoadImage returned true" : L"LoadImage returned false",
+    //         L"Debug", MB_OK);
+    // }
+
     if (GetOpenFileNameW(&ofn)) {
-        bool ok = LoadImage(szFile);
-        MessageBoxW(nullptr,
-            ok ? L"LoadImage returned true" : L"LoadImage returned false",
-            L"Debug", MB_OK);
+        // --- enumerate all images in this folder ---
+        namespace fs = std::filesystem;
+        fs::path selectedPath(szFile);
+        auto folder = selectedPath.parent_path();
+
+        g_fileList.clear();
+        for (auto& ent : fs::directory_iterator(folder)) {
+            if (!ent.is_regular_file()) continue;
+            auto ext = ent.path().extension().wstring();
+            // compare lowercase
+            std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
+            if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".bmp" || ext == L".tga") {
+                g_fileList.push_back(ent.path().wstring());
+            }
+        }
+        std::sort(g_fileList.begin(), g_fileList.end());
+
+        // find which slot we opened
+        auto it = std::find(g_fileList.begin(), g_fileList.end(), selectedPath.wstring());
+        g_currentFileIndex = (it == g_fileList.end() ? 0 : int(std::distance(g_fileList.begin(), it)));
+
+        // now load only that one
+        bool ok = LoadImage(g_fileList[g_currentFileIndex]);
+        // build a proper std::wstring and pass its c_str()
+        std::wstring msg;
+        if (ok) {
+            msg = L"Loaded \"" +
+                  std::filesystem::path(g_fileList[g_currentFileIndex])
+                    .filename()
+                    .wstring() +
+                  L"\"";
+        } else {
+            msg = L"LoadImage failed";
+        }
+        MessageBoxW(nullptr, msg.c_str(), L"Debug", MB_OK);
     }
 
     int screenW = GetSystemMetrics(SM_CXSCREEN);
