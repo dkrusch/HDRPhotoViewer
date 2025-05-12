@@ -42,8 +42,9 @@ UINT                         g_frameIndex = 0;
 UINT64                       g_fenceValue = 0;
 HANDLE                       g_fenceEvent = nullptr;
 
-
-
+// Global variables for sorting image array
+enum class SortMode { ByName, ByDateModified, ByDateCreated };
+static SortMode g_sortMode = SortMode::ByName;
 
 // ---- new globals for “next/prev” support ----
 static std::vector<std::wstring> g_fileList;
@@ -277,6 +278,53 @@ bool LoadImage(const std::wstring& wpath) {
     return true;
 }
 
+// helper to get creation FILETIME for a path
+static FILETIME GetCreationTime(const std::wstring& path)
+{
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    if (GetFileAttributesExW(path.c_str(),
+                             GetFileExInfoStandard,
+                             &data))
+    {
+        return data.ftCreationTime;
+    }
+    // on failure, return zero (earliest possible)
+    return FILETIME{ 0, 0 };
+}
+
+auto sortFiles = [&](){
+    namespace fs = std::filesystem;
+    switch (g_sortMode) {
+    case SortMode::ByName:
+        std::sort(g_fileList.begin(), g_fileList.end(),
+                  std::greater<std::wstring>()); 
+        break;
+
+    case SortMode::ByDateModified:
+        std::sort(g_fileList.begin(), g_fileList.end(),
+            [&](auto &a, auto &b){
+                return fs::last_write_time(a)
+                     > fs::last_write_time(b);  // descending
+            });
+        break;
+
+    case SortMode::ByDateCreated:
+        std::sort(g_fileList.begin(), g_fileList.end(),
+            [&](auto &a, auto &b){
+                FILETIME ca = GetCreationTime(a);
+                FILETIME cb = GetCreationTime(b);
+                ULARGE_INTEGER ua = {};
+                ua.LowPart  = ca.dwLowDateTime;
+                ua.HighPart = ca.dwHighDateTime;
+                ULARGE_INTEGER ub = {};
+                ub.LowPart  = cb.dwLowDateTime;
+                ub.HighPart = cb.dwHighDateTime;
+                return ua.QuadPart > ub.QuadPart;  // descending
+            });
+        break;
+    }
+};
+
 // Forward‐declare Win32 window proc
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
 {
@@ -350,6 +398,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
             g_offY        = g_targetOffY = 0.0f;
             return 0;
         }
+        if (wP == 'T') {
+            // cycle through Name → Modified → Created
+            g_sortMode = SortMode((int(g_sortMode) + 1) % 3);
+            // re-sort & reset index to the current file’s new position:
+            std::wstring curr = g_fileList[g_currentFileIndex];
+            sortFiles();
+            auto it = std::find(g_fileList.begin(), g_fileList.end(), curr);
+            g_currentFileIndex = it == g_fileList.end()
+                ? 0
+                : int(std::distance(g_fileList.begin(), it));
+            return 0;
+        }
 
         break;
     }
@@ -392,7 +452,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
                 g_fileList.push_back(ent.path().wstring());
             }
         }
-        std::sort(g_fileList.begin(), g_fileList.end());
+
+        namespace fs = std::filesystem;
+        sortFiles();
 
         // find which slot we opened
         auto it = std::find(g_fileList.begin(), g_fileList.end(), selectedPath.wstring());
