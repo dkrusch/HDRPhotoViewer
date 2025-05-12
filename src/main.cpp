@@ -1,17 +1,18 @@
 // src/main.cpp
 #include <windows.h>
-#include <windowsx.h>   // for GET_X_LPARAM, GET_Y_LPARAM
+#include <windowsx.h>       // for GET_X_LPARAM, GET_Y_LPARAM
 #include <wrl.h>
 #include <d3d12.h>
 #include <dxgi1_4.h>
 #include <d3dcompiler.h>
-#include <d3dx12.h>       // from third_party/d3dx12/d3dx12.h
-#include <commdlg.h>      // GetOpenFileNameW
+#include <d3dx12.h>         // from third_party/d3dx12/d3dx12.h
+#include <commdlg.h>        // GetOpenFileNameW
 #include <string>
 #include <vector>
 #include <cstdint>
 #include <chrono>
 #include <thread>
+#include <algorithm>        // for std::clamp
 
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -48,8 +49,15 @@ float g_zoom       = 1.0f;    // current, used for rendering
 float g_targetZoom = 1.0f;    // goal, set by wheel
 float g_offX = 0.0f;    // offset in clip space (-1…1)
 float g_offY = 0.0f;
+float g_targetOffX = 0.0f;
+float g_targetOffY = 0.0f;
+
 int g_screenW = 0;
 int g_screenH = 0;
+
+// Letterbox scales (computed once at load)
+float  g_baseScaleX = 1.0f;
+float  g_baseScaleY = 1.0f;
 
 // Full‐screen triangle shaders (will draw your image later)
 static const char* g_VS = R"(
@@ -126,18 +134,38 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
 
     case WM_MOUSEWHEEL:
     {
-        int delta = GET_WHEEL_DELTA_WPARAM(wP);  // +120 or –120 per notch
-        const float zoomStep = 0.1f;
+        // 1) current cursor in client
+        POINT pt; GetCursorPos(&pt);
+        ScreenToClient(hWnd, &pt);
+        float ndcX = (pt.x/float(g_screenW))*2 - 1;
+        float ndcY = 1 - (pt.y/float(g_screenH))*2;
 
-        if (delta > 0)
-            g_targetZoom *= (1.0f + zoomStep * (delta / 120.0f));
-        else if (delta < 0)
-            g_targetZoom /= (1.0f + zoomStep * (-delta / 120.0f));
+        // 2) update g_targetZoom as before
+        int notches = GET_WHEEL_DELTA_WPARAM(wP) / WHEEL_DELTA;
+        const float zoomStep = 0.05f;
+        float factorZ = powf(1.0f + zoomStep, float(notches));
+        g_targetZoom = std::clamp(g_targetZoom * factorZ, 0.1f, 10.0f);
 
-        // clamp target
-        g_targetZoom = max(0.1f, min(10.0f, g_targetZoom));
+        // 3) perfect cursor‐centric pivot
+        float oldZ = g_zoom;
+        float newZ = g_targetZoom;
+        float f    = newZ / oldZ;
+        g_targetOffX = g_targetOffX * f + ndcX * (1.0f - f);
+        g_targetOffY = g_targetOffY * f + ndcY * (1.0f - f);
+
         return 0;
     }
+
+    case WM_KEYDOWN:
+    {
+        if (wP == VK_ESCAPE) {
+            // Cleanly close the window / exit message loop
+            PostQuitMessage(0);
+            return 0;
+        }
+        break;
+    }
+    
 
     }
     return DefWindowProc(hWnd, msg, wP, lP);
@@ -224,17 +252,24 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
     g_screenW = screenW;
     g_screenH = screenH;
 
-    // Compute letter-box scales:
-    float imgAspect    = float(g_imgW) / float(g_imgH);
-    float screenAspect = float(screenW) / float(screenH);
-    float scaleX = 1, scaleY = 1;
-    if (imgAspect > screenAspect) {
-        // image is wider → pillar‐box
-        scaleY = screenAspect / imgAspect;
-    } else {
-        // image is taller → letter‐box
-        scaleX = imgAspect / screenAspect;
+    // compute image vs screen aspect once
+    {
+        float imgAspect    = float(g_imgW) / float(g_imgH);
+        float screenAspect = float(g_screenW) / float(g_screenH);
+        g_baseScaleX = 1.0f;
+        g_baseScaleY = 1.0f;
+        if (imgAspect > screenAspect) {
+            // image is wider → pillarbox vertically
+            g_baseScaleY = screenAspect / imgAspect;
+        } else {
+            // image taller → letterbox horizontally
+            g_baseScaleX = imgAspect / screenAspect;
+        }
     }
+    // reset zoom & pan
+    g_zoom       = g_targetZoom = 1.0f;
+    g_offX       = g_targetOffX = 0.0f;
+    g_offY       = g_targetOffY = 0.0f;
 
 
     // 2) Win32 window setup
@@ -663,17 +698,26 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
                 g_srvHeap->GetGPUDescriptorHandleForHeapStart()
             );
 
-            const float smoothFactor = 0.2f;  
-            g_zoom += (g_targetZoom - g_zoom) * smoothFactor;
+            const float zoomLerp = 0.1f, panLerp = 0.1f;
+            g_zoom += (g_targetZoom - g_zoom) * zoomLerp;
+            g_offX += (g_targetOffX - g_offX) * panLerp;
+            g_offY += (g_targetOffY - g_offY) * panLerp;
 
-            // then compute your scaleX/Y with g_zoom as before
-            float scaleVals[4] = {
-                scaleX * g_zoom,
-                scaleY * g_zoom,
-                g_offX,
-                g_offY
-            };
-            cl->SetGraphicsRoot32BitConstants(1, 4, scaleVals, 0);
+            // then clamp exactly as before
+            float halfW = g_baseScaleX * g_zoom;
+            float halfH = g_baseScaleY * g_zoom;
+            float panLimitX = (halfW > 1) ? (halfW - 1) : 0;
+            float panLimitY = (halfH > 1) ? (halfH - 1) : 0;
+            g_offX = std::clamp(g_offX, -panLimitX, panLimitX);
+            g_offY = std::clamp(g_offY, -panLimitY, panLimitY);
+
+            // 4) push the four transform constants:
+            float t[4] = { g_baseScaleX * g_zoom,
+                        g_baseScaleY * g_zoom,
+                        g_offX,
+                        g_offY };
+
+            cl->SetGraphicsRoot32BitConstants(1, 4, t, 0);
 
 
             // draw full-screen triangle
