@@ -1,5 +1,6 @@
 // src/main.cpp
 #include <windows.h>
+#include <windowsx.h>   // for GET_X_LPARAM, GET_Y_LPARAM
 #include <wrl.h>
 #include <d3d12.h>
 #include <dxgi1_4.h>
@@ -42,13 +43,22 @@ HANDLE                       g_fenceEvent = nullptr;
 // Image data globals
 std::vector<uint8_t>         g_pixels;
 int                          g_imgW = 0, g_imgH = 0;
+// Track zoom interval and mouse position
+float g_zoom       = 1.0f;    // current, used for rendering
+float g_targetZoom = 1.0f;    // goal, set by wheel
+float g_offX = 0.0f;    // offset in clip space (-1…1)
+float g_offY = 0.0f;
+int g_screenW = 0;
+int g_screenH = 0;
 
 // Full‐screen triangle shaders (will draw your image later)
 static const char* g_VS = R"(
-cbuffer ScaleCB : register(b0)
+cbuffer TransformCB : register(b0)
 {
     float scaleX;
     float scaleY;
+    float offX;
+    float offY;
 };
 
 struct VSOut {
@@ -58,14 +68,12 @@ struct VSOut {
 
 VSOut VSMain(uint vid : SV_VertexID)
 {
-    // 4 corners of a rectangle centered at (0,0) scaled by scaleX/scaleY
     float2 quadPos[4] = {
-        float2(-scaleX, -scaleY),  // bottom-left
-        float2( scaleX, -scaleY),  // bottom-right
-        float2(-scaleX,  scaleY),  // top-left
-        float2( scaleX,  scaleY)   // top-right
+        float2(-scaleX, -scaleY),
+        float2( scaleX, -scaleY),
+        float2(-scaleX,  scaleY),
+        float2( scaleX,  scaleY)
     };
-    // Corresponding UVs
     float2 quadUV[4] = {
         float2(0, 1),
         float2(1, 1),
@@ -74,11 +82,13 @@ VSOut VSMain(uint vid : SV_VertexID)
     };
 
     VSOut o;
-    o.pos = float4(quadPos[vid], 0, 1);
+    // apply zoom‐center translation
+    o.pos = float4(quadPos[vid] + float2(offX, offY), 0, 1);
     o.uv  = quadUV[vid];
     return o;
 }
 )";
+
 
 
 static const char* g_PS = R"(
@@ -107,7 +117,31 @@ inline void ThrowIfFailed(HRESULT hr) {
 
 
 // Forward‐declare Win32 window proc
-LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
+LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
+{
+    switch (msg) {
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+
+    case WM_MOUSEWHEEL:
+    {
+        int delta = GET_WHEEL_DELTA_WPARAM(wP);  // +120 or –120 per notch
+        const float zoomStep = 0.1f;
+
+        if (delta > 0)
+            g_targetZoom *= (1.0f + zoomStep * (delta / 120.0f));
+        else if (delta < 0)
+            g_targetZoom /= (1.0f + zoomStep * (-delta / 120.0f));
+
+        // clamp target
+        g_targetZoom = max(0.1f, min(10.0f, g_targetZoom));
+        return 0;
+    }
+
+    }
+    return DefWindowProc(hWnd, msg, wP, lP);
+}
 
 // ------------------------------------------------
 // Load an image from disk into g_pixels, g_imgW, g_imgH
@@ -187,6 +221,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
 
     int screenW = GetSystemMetrics(SM_CXSCREEN);
     int screenH = GetSystemMetrics(SM_CYSCREEN);
+    g_screenW = screenW;
+    g_screenH = screenH;
 
     // Compute letter-box scales:
     float imgAspect    = float(g_imgW) / float(g_imgH);
@@ -330,7 +366,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
         // 2) 32‐bit constants for scaleX/scaleY (b0)
         D3D12_ROOT_PARAMETER scaleParam{};
         scaleParam.ParameterType                    = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        scaleParam.Constants.Num32BitValues         = 2;
+        scaleParam.Constants.Num32BitValues         = 4;  // scaleX, scaleY, offX, offY
         scaleParam.Constants.ShaderRegister         = 0; // b0
         scaleParam.Constants.RegisterSpace          = 0;
         scaleParam.ShaderVisibility                 = D3D12_SHADER_VISIBILITY_VERTEX;
@@ -627,9 +663,18 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
                 g_srvHeap->GetGPUDescriptorHandleForHeapStart()
             );
 
-            // slot 1 → two 32-bit constants (scaleX, scaleY)
-            float scaleVals[2] = { scaleX, scaleY };
-            cl->SetGraphicsRoot32BitConstants(1, 2, scaleVals, 0);
+            const float smoothFactor = 0.2f;  
+            g_zoom += (g_targetZoom - g_zoom) * smoothFactor;
+
+            // then compute your scaleX/Y with g_zoom as before
+            float scaleVals[4] = {
+                scaleX * g_zoom,
+                scaleY * g_zoom,
+                g_offX,
+                g_offY
+            };
+            cl->SetGraphicsRoot32BitConstants(1, 4, scaleVals, 0);
+
 
             // draw full-screen triangle
             cl->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
@@ -642,28 +687,23 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
                 D3D12_RESOURCE_STATE_PRESENT
             ));
 
-            // 9) Execute & present
-            using clock = std::chrono::high_resolution_clock;
-            static auto lastFrame = clock::now();
-
             // close + submit
             cl->Close();
             ID3D12CommandList* lists[] = { cl.Get() };
             g_cmdQueue->ExecuteCommandLists(_countof(lists), lists);
 
-            // present (still v-sync once, so FrameTime ≥ display interval)
+            // present immediately, no v-sync
             g_swapChain->Present(1, 0);
 
             // frame-timing
-            auto now      = clock::now();
-            auto elapsed  = std::chrono::duration<float, std::milli>(now - lastFrame).count();
-            auto desired  = 1000.0f / 60.0f;   // ~16.6667 ms
-            if (elapsed < desired) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(long(desired - elapsed)));
-            }
+            using clock = std::chrono::high_resolution_clock;
+            static auto lastFrame = clock::now();
+            auto now     = clock::now();
+            auto elapsed = std::chrono::duration<float, std::milli>(now - lastFrame).count();
+            auto target  = 1000.0f / 60.0f;
             lastFrame = clock::now();
 
-            // advance to next buffer
+            // swap buffer index
             g_frameIndex = g_swapChain->GetCurrentBackBufferIndex();
         }
     }
@@ -671,13 +711,3 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
     return 0;
 }
 
-// Window procedure
-LRESULT CALLBACK WndProc(HWND hWnd, UINT msg,
-                         WPARAM wP, LPARAM lP)
-{
-    if (msg == WM_DESTROY) {
-        PostQuitMessage(0);
-        return 0;
-    }
-    return DefWindowProc(hWnd, msg, wP, lP);
-}
