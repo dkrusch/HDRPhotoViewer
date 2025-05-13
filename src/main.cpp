@@ -391,6 +391,41 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
             }
             return 0;
         }
+        if (wP == VK_UP || wP == VK_DOWN) {
+            if (GetAsyncKeyState(VK_UP) < 0) {
+                // zoom in
+                int notches = 1;
+                const float zoomStep = 0.05f;
+                float factorZ = powf(1.0f + zoomStep, float(notches));
+                g_targetZoom = std::clamp(g_targetZoom * factorZ, 0.1f, 10.0f);
+
+                // 3) perfect cursor-centric pivot, but with pivot at image center
+                float oldZ = g_zoom;
+                float newZ = g_targetZoom;
+                float f    = newZ / oldZ;
+                float centerX = 0.0f; // center of image in NDC
+                float centerY = 0.0f; // center of image in NDC
+                g_targetOffX = centerX * (1.0f - f) + g_targetOffX * f;
+                g_targetOffY = centerY * (1.0f - f) + g_targetOffY * f;
+            }
+
+            if (GetAsyncKeyState(VK_DOWN) < 0) {
+                // zoom out
+                int notches = -1;
+                const float zoomStep = 0.05f;
+                float factorZ = powf(1.0f + zoomStep, float(notches));
+                g_targetZoom = std::clamp(g_targetZoom * factorZ, 0.1f, 10.0f);
+
+                // 3) perfect cursor-centric pivot, but with pivot at image center
+                float oldZ = g_zoom;
+                float newZ = g_targetZoom;
+                float f    = newZ / oldZ;
+                float centerX = 0.0f; // center of image in NDC
+                float centerY = 0.0f; // center of image in NDC
+                g_targetOffX = centerX * (1.0f - f) + g_targetOffX * f;
+                g_targetOffY = centerY * (1.0f - f) + g_targetOffY * f;
+            }
+        }
         if (wP == 'R') {
             // Reset zoom & pan
             g_zoom        = g_targetZoom = 1.0f;
