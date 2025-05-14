@@ -15,7 +15,7 @@
 #include <algorithm>        // for std::clamp
 #include <filesystem>       // C++17
 #include <cstdio>           // for FILE*
-
+#include <chrono>    // for steady_clock
 
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -49,12 +49,19 @@ static SortMode g_sortMode = SortMode::ByName;
 // ---- new globals for “next/prev” support ----
 static std::vector<std::wstring> g_fileList;
 static int                       g_currentFileIndex = 0;
+
+// Track cursor movement time for hide
+static std::chrono::steady_clock::time_point g_lastMouseMove;
+static bool g_cursorHidden = false;
+
 // Image data globals
 std::vector<uint8_t>         g_pixels;
 int                          g_imgW = 0, g_imgH = 0;
+
 // Track zoom interval and mouse position
 float g_zoom       = 1.0f;    // current, used for rendering
 float g_targetZoom = 1.0f;    // goal, set by wheel
+float oldZoom = g_targetZoom; // before you change g_targetZoom
 float g_offX = 0.0f;    // offset in clip space (-1…1)
 float g_offY = 0.0f;
 float g_targetOffX = 0.0f;
@@ -120,19 +127,54 @@ float4 PSMain(VSOut vsIn) : SV_TARGET
 }
 )";
 
-
 // Simple HRESULT checker (used by UpdateSubresources block)
 inline void ThrowIfFailed(HRESULT hr) {
+    if (hr == DXGI_ERROR_DEVICE_REMOVED) {
+        // Grab the *actual* removal reason:
+        HRESULT reason = g_device
+            ? g_device->GetDeviceRemovedReason()
+            : hr;
+        wchar_t buf[128];
+        swprintf_s(buf,
+                   L"D3D12 device removed!\nGetDeviceRemovedReason = 0x%08X",
+                   reason);
+        MessageBoxW(nullptr, buf, L"DX12 DEVICE REMOVED", MB_OK|MB_ICONERROR);
+        exit((int)reason);
+    }
     if (FAILED(hr)) {
         wchar_t buf[64];
         swprintf_s(buf, L"HRESULT failed: 0x%08X", hr);
-        MessageBoxW(nullptr, buf, L"Error", MB_OK | MB_ICONERROR);
+        MessageBoxW(nullptr, buf, L"Error", MB_OK|MB_ICONERROR);
         exit((int)hr);
     }
 }
 
 void CreateTextureFromPixels()
 {
+    int screenW = GetSystemMetrics(SM_CXSCREEN);
+    int screenH = GetSystemMetrics(SM_CYSCREEN);
+    g_screenW = screenW;
+    g_screenH = screenH;
+
+    // compute image vs screen aspect once
+    {
+        float imgAspect    = float(g_imgW) / float(g_imgH);
+        float screenAspect = float(g_screenW) / float(g_screenH);
+        g_baseScaleX = 1.0f;
+        g_baseScaleY = 1.0f;
+        if (imgAspect > screenAspect) {
+            // image is wider → pillarbox vertically
+            g_baseScaleY = screenAspect / imgAspect;
+        } else {
+            // image taller → letterbox horizontally
+            g_baseScaleX = imgAspect / screenAspect;
+        }
+    }
+    // reset zoom & pan
+    // g_zoom       = g_targetZoom = 1.0f;
+    // g_offX       = g_targetOffX = 0.0f;
+    // g_offY       = g_targetOffY = 0.0f;
+    
     if (g_pixels.empty()) return;
 
     // 1) Describe the texture
@@ -325,6 +367,52 @@ auto sortFiles = [&](){
     }
 };
 
+// Returns true if we successfully opened & loaded an image.
+bool OpenFileDialogAndLoad()
+{
+    // 1) File-open dialog
+    OPENFILENAMEW ofn{};
+    wchar_t szFile[MAX_PATH]{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.lpstrFilter = L"Images\0*.jpg;*.png\0All Files\0*.*\0";
+    ofn.lpstrFile   = szFile;
+    ofn.nMaxFile    = MAX_PATH;
+
+    if (!GetOpenFileNameW(&ofn))
+        return false;    // user cancelled or error
+
+    // --- enumerate all images in this folder ---
+    namespace fs = std::filesystem;
+    fs::path selectedPath(szFile);
+    auto folder = selectedPath.parent_path();
+
+    g_fileList.clear();
+    for (auto& ent : fs::directory_iterator(folder)) {
+        if (!ent.is_regular_file()) continue;
+        auto ext = ent.path().extension().wstring();
+        std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
+        if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" ||
+            ext == L".bmp" || ext == L".tga") {
+            g_fileList.push_back(ent.path().wstring());
+        }
+    }
+
+    sortFiles();
+
+    auto it = std::find(g_fileList.begin(), g_fileList.end(), selectedPath.wstring());
+    g_currentFileIndex = (it == g_fileList.end()) 
+                           ? 0 
+                           : int(std::distance(g_fileList.begin(), it));
+
+    // now load it
+    if (!LoadImage(g_fileList[g_currentFileIndex])) {
+        MessageBoxW(nullptr, L"LoadImage failed", L"Error", MB_OK | MB_ICONERROR);
+        return false;
+    }
+    // CreateTextureFromPixels();
+    return true;
+}
+
 // Forward‐declare Win32 window proc
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
 {
@@ -335,24 +423,43 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
 
     case WM_MOUSEWHEEL:
     {
-        // 1) current cursor in client
-        POINT pt; GetCursorPos(&pt);
+        using clock = std::chrono::steady_clock;
+        g_lastMouseMove = clock::now();
+        if (g_cursorHidden) {
+            ShowCursor(TRUE);
+            g_cursorHidden = false;
+        }
+        
+        // 1) Compute mouse in NDC (–1…+1)
+        POINT pt; 
+        GetCursorPos(&pt);
         ScreenToClient(hWnd, &pt);
-        float ndcX = (pt.x/float(g_screenW))*2 - 1;
-        float ndcY = 1 - (pt.y/float(g_screenH))*2;
+        float ndcX = (pt.x / float(g_screenW)) * 2.0f - 1.0f;
+        float ndcY = 1.0f - (pt.y / float(g_screenH)) * 2.0f;
 
-        // 2) update g_targetZoom as before
-        int notches = GET_WHEEL_DELTA_WPARAM(wP) / WHEEL_DELTA;
-        const float zoomStep = 0.05f;
-        float factorZ = powf(1.0f + zoomStep, float(notches));
-        g_targetZoom = std::clamp(g_targetZoom * factorZ, 0.1f, 10.0f);
+        // 2) Grab your *current* zoom & pan
+        float oldZ    = g_zoom;
+        float oldOffX = g_offX;
+        float oldOffY = g_offY;
 
-        // 3) perfect cursor‐centric pivot
-        float oldZ = g_zoom;
-        float newZ = g_targetZoom;
-        float f    = newZ / oldZ;
-        g_targetOffX = g_targetOffX * f + ndcX * (1.0f - f);
-        g_targetOffY = g_targetOffY * f + ndcY * (1.0f - f);
+        // 3) Compute the new zoom level
+        int   notches = GET_WHEEL_DELTA_WPARAM(wP) / WHEEL_DELTA;
+        const float step = 0.3f;
+        float newZ = std::clamp(
+            oldZ * powf(1.0f + step, float(notches)),
+            0.5f, 10.0f
+        );
+
+        // 4) Pivot around the cursor so that point stays fixed:
+        //    newOff = oldOff * ratio + ndc*(1 - ratio)
+        float ratio    = newZ / oldZ;
+        float newOffX  = oldOffX * ratio + ndcX * (1.0f - ratio);
+        float newOffY  = oldOffY * ratio + ndcY * (1.0f - ratio);
+
+        // 5) Commit to the *target* values—your render‐loop lerp will smooth you there
+        g_targetZoom   = newZ;
+        g_targetOffX   = newOffX;
+        g_targetOffY   = newOffY;
 
         return 0;
     }
@@ -381,10 +488,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
                     // image taller → letterbox horizontally
                     g_baseScaleX = imgAspect / screenAspect;
                 }
-                // Reset zoom & pan
-                g_zoom        = g_targetZoom = 1.0f;
-                g_offX        = g_targetOffX = 0.0f;
-                g_offY        = g_targetOffY = 0.0f;
 
                 // Upload to GPU
                 CreateTextureFromPixels();
@@ -393,7 +496,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
         }
         if (wP == VK_UP || wP == VK_DOWN) {
             if (GetAsyncKeyState(VK_UP) < 0) {
-                // zoom in
+                // 1) reset pan to center
+                g_offX        = g_targetOffX = 0.0f;
+                g_offY        = g_targetOffY = 0.0f;
+
+                // 2) zoom in
                 int notches = 1;
                 const float zoomStep = 0.05f;
                 float factorZ = powf(1.0f + zoomStep, float(notches));
@@ -445,7 +552,26 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
                 : int(std::distance(g_fileList.begin(), it));
             return 0;
         }
+        if (wP == 'O') {
+            if (OpenFileDialogAndLoad()) {
+                CreateTextureFromPixels();
+            }
 
+            return 0;
+        }
+
+        break;
+    }
+
+    // When mouse moves unhide cursor
+    case WM_MOUSEMOVE:
+    {
+        using clock = std::chrono::steady_clock;
+        g_lastMouseMove = clock::now();
+        if (g_cursorHidden) {
+            ShowCursor(TRUE);
+            g_cursorHidden = false;
+        }
         break;
     }
     
@@ -456,60 +582,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
 
 // ------------------------------------------------
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
-    // 1) File-open dialog
-    OPENFILENAMEW ofn{};
-    wchar_t szFile[MAX_PATH]{};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.lpstrFilter = L"Images\0*.jpg;*.png\0All Files\0*.*\0";
-    ofn.lpstrFile   = szFile;
-    ofn.nMaxFile    = MAX_PATH;
-    
-    // if (GetOpenFileNameW(&ofn)) {
-    //     bool ok = LoadImage(szFile);
-    //     MessageBoxW(nullptr,
-    //         ok ? L"LoadImage returned true" : L"LoadImage returned false",
-    //         L"Debug", MB_OK);
-    // }
 
-    if (GetOpenFileNameW(&ofn)) {
-        // --- enumerate all images in this folder ---
-        namespace fs = std::filesystem;
-        fs::path selectedPath(szFile);
-        auto folder = selectedPath.parent_path();
-
-        g_fileList.clear();
-        for (auto& ent : fs::directory_iterator(folder)) {
-            if (!ent.is_regular_file()) continue;
-            auto ext = ent.path().extension().wstring();
-            // compare lowercase
-            std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
-            if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".bmp" || ext == L".tga") {
-                g_fileList.push_back(ent.path().wstring());
-            }
-        }
-
-        namespace fs = std::filesystem;
-        sortFiles();
-
-        // find which slot we opened
-        auto it = std::find(g_fileList.begin(), g_fileList.end(), selectedPath.wstring());
-        g_currentFileIndex = (it == g_fileList.end() ? 0 : int(std::distance(g_fileList.begin(), it)));
-
-        // now load only that one
-        bool ok = LoadImage(g_fileList[g_currentFileIndex]);
-        // build a proper std::wstring and pass its c_str()
-        std::wstring msg;
-        if (ok) {
-            msg = L"Loaded \"" +
-                  std::filesystem::path(g_fileList[g_currentFileIndex])
-                    .filename()
-                    .wstring() +
-                  L"\"";
-        } else {
-            msg = L"LoadImage failed";
-        }
-        MessageBoxW(nullptr, msg.c_str(), L"Debug", MB_OK);
-    }
+    // Run windows file open dialog
+    if (!OpenFileDialogAndLoad())
+    return 0;   // no file → exit
 
     int screenW = GetSystemMetrics(SM_CXSCREEN);
     int screenH = GetSystemMetrics(SM_CYSCREEN);
@@ -530,11 +606,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
             g_baseScaleX = imgAspect / screenAspect;
         }
     }
-    // reset zoom & pan
-    g_zoom       = g_targetZoom = 1.0f;
-    g_offX       = g_targetOffX = 0.0f;
-    g_offY       = g_targetOffY = 0.0f;
-
 
     // 2) Win32 window setup
     WNDCLASS wc{};
@@ -543,7 +614,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
     wc.lpszClassName = L"HDRViewerClass";
     RegisterClass(&wc);
 
-    
 
     // 2) Create a WS_POPUP window at full-screen size:
     HWND hwnd = CreateWindowEx(
@@ -577,7 +647,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
         return 0;
     }
 
-
     DXGI_SWAP_CHAIN_DESC1 scd = {};
     scd.BufferCount       = FrameCount;
     scd.Width             = screenW;
@@ -598,7 +667,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
     factory->MakeWindowAssociation(hwnd, 0);
 
     // 6) Enter exclusive full-screen
-    ThrowIfFailed(g_swapChain->SetFullscreenState(TRUE, nullptr));
+    // ThrowIfFailed(g_swapChain->SetFullscreenState(TRUE, nullptr));
 
     // 7) **Force** the buffers to the exact full-screen size
     ThrowIfFailed(g_swapChain->ResizeBuffers(
@@ -878,11 +947,25 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
     }
 
 
+    if (!g_pixels.empty()) {
+        CreateTextureFromPixels();
+    }
 
+    g_lastMouseMove = std::chrono::steady_clock::now();
 
     // 9) Main loop: clear & present
     MSG msg{};
     while (msg.message != WM_QUIT) {
+        {
+            using clock = std::chrono::steady_clock;
+            auto now   = clock::now();
+            auto idle  = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastMouseMove).count();
+            if (idle > 2000 && !g_cursorHidden) {
+                ShowCursor(FALSE);
+                g_cursorHidden = true;
+            }
+        }
+
         if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
