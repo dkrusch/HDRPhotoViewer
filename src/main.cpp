@@ -49,15 +49,19 @@ static SortMode g_sortMode = SortMode::ByName;
 // ---- new globals for “next/prev” support ----
 static std::vector<std::wstring> g_fileList;
 static int                       g_currentFileIndex = 0;
+
 // Track cursor movement time for hide
 static std::chrono::steady_clock::time_point g_lastMouseMove;
 static bool g_cursorHidden = false;
+
 // Image data globals
 std::vector<uint8_t>         g_pixels;
 int                          g_imgW = 0, g_imgH = 0;
+
 // Track zoom interval and mouse position
 float g_zoom       = 1.0f;    // current, used for rendering
 float g_targetZoom = 1.0f;    // goal, set by wheel
+float oldZoom = g_targetZoom; // before you change g_targetZoom
 float g_offX = 0.0f;    // offset in clip space (-1…1)
 float g_offY = 0.0f;
 float g_targetOffX = 0.0f;
@@ -419,24 +423,43 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
 
     case WM_MOUSEWHEEL:
     {
-        // 1) current cursor in client
-        POINT pt; GetCursorPos(&pt);
+        using clock = std::chrono::steady_clock;
+        g_lastMouseMove = clock::now();
+        if (g_cursorHidden) {
+            ShowCursor(TRUE);
+            g_cursorHidden = false;
+        }
+        
+        // 1) Compute mouse in NDC (–1…+1)
+        POINT pt; 
+        GetCursorPos(&pt);
         ScreenToClient(hWnd, &pt);
-        float ndcX = (pt.x/float(g_screenW))*2 - 1;
-        float ndcY = 1 - (pt.y/float(g_screenH))*2;
+        float ndcX = (pt.x / float(g_screenW)) * 2.0f - 1.0f;
+        float ndcY = 1.0f - (pt.y / float(g_screenH)) * 2.0f;
 
-        // 2) update g_targetZoom as before
-        int notches = GET_WHEEL_DELTA_WPARAM(wP) / WHEEL_DELTA;
-        const float zoomStep = 0.05f;
-        float factorZ = powf(1.0f + zoomStep, float(notches));
-        g_targetZoom = std::clamp(g_targetZoom * factorZ, 0.1f, 10.0f);
+        // 2) Grab your *current* zoom & pan
+        float oldZ    = g_zoom;
+        float oldOffX = g_offX;
+        float oldOffY = g_offY;
 
-        // 3) perfect cursor‐centric pivot
-        float oldZ = g_zoom;
-        float newZ = g_targetZoom;
-        float f    = newZ / oldZ;
-        g_targetOffX = g_targetOffX * f + ndcX * (1.0f - f);
-        g_targetOffY = g_targetOffY * f + ndcY * (1.0f - f);
+        // 3) Compute the new zoom level
+        int   notches = GET_WHEEL_DELTA_WPARAM(wP) / WHEEL_DELTA;
+        const float step = 0.3f;
+        float newZ = std::clamp(
+            oldZ * powf(1.0f + step, float(notches)),
+            0.5f, 10.0f
+        );
+
+        // 4) Pivot around the cursor so that point stays fixed:
+        //    newOff = oldOff * ratio + ndc*(1 - ratio)
+        float ratio    = newZ / oldZ;
+        float newOffX  = oldOffX * ratio + ndcX * (1.0f - ratio);
+        float newOffY  = oldOffY * ratio + ndcY * (1.0f - ratio);
+
+        // 5) Commit to the *target* values—your render‐loop lerp will smooth you there
+        g_targetZoom   = newZ;
+        g_targetOffX   = newOffX;
+        g_targetOffY   = newOffY;
 
         return 0;
     }
@@ -465,10 +488,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
                     // image taller → letterbox horizontally
                     g_baseScaleX = imgAspect / screenAspect;
                 }
-                // Reset zoom & pan
-                // g_zoom        = g_targetZoom = 1.0f;
-                // g_offX        = g_targetOffX = 0.0f;
-                // g_offY        = g_targetOffY = 0.0f;
 
                 // Upload to GPU
                 CreateTextureFromPixels();
@@ -477,7 +496,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
         }
         if (wP == VK_UP || wP == VK_DOWN) {
             if (GetAsyncKeyState(VK_UP) < 0) {
-                // zoom in
+                // 1) reset pan to center
+                g_offX        = g_targetOffX = 0.0f;
+                g_offY        = g_targetOffY = 0.0f;
+
+                // 2) zoom in
                 int notches = 1;
                 const float zoomStep = 0.05f;
                 float factorZ = powf(1.0f + zoomStep, float(notches));
