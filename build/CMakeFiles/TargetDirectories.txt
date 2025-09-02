@@ -1,3 +1,8 @@
 C:/HDRViewer/build/CMakeFiles/HDRViewer.dir
+<<<<<<< HEAD
 C:/HDRViewer/build/CMakeFiles/ALL_BUILD.dir
 C:/HDRViewer/build/CMakeFiles/ZERO_CHECK.dir
+=======
+C:/HDRViewer/build/CMakeFiles/edit_cache.dir
+C:/HDRViewer/build/CMakeFiles/rebuild_cache.dir
+>>>>>>> info-and-drag
