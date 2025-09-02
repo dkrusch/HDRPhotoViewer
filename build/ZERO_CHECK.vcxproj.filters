@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\HDRViewer\build\CMakeFiles\c1bf75d058378e247b51024d6e02af47\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{F2B761B9-768C-335F-A0D1-292A5105DA6D}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

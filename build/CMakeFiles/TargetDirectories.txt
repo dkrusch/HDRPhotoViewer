@@ -1,0 +1,3 @@
+C:/HDRViewer/build/CMakeFiles/HDRViewer.dir
+C:/HDRViewer/build/CMakeFiles/edit_cache.dir
+C:/HDRViewer/build/CMakeFiles/rebuild_cache.dir

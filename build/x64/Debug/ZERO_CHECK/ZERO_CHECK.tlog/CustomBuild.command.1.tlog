@@ -1,0 +1,10 @@
+^C:\HDRVIEWER\BUILD\CMAKEFILES\C1BF75D058378E247B51024D6E02AF47\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/HDRViewer -BC:/HDRViewer/build --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file C:/HDRViewer/build/HDRViewer.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
