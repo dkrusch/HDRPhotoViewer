@@ -1512,7 +1512,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
                 // Offsets for a crude 1-pixel border (in screen-space pixels)
                 const float scale   = 3.0f;
                 const float cx      = 0.5f * g_screenW;
-                const float cy      = 0.05f * g_screenH;
+                const float cy      = 0.025f * g_screenH;
 
 
                 // Finally the main text in green on top
