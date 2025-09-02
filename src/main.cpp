@@ -30,7 +30,9 @@ using Microsoft::WRL::ComPtr;
 
 
 #define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_RESIZE2_IMPLEMENTATION
 #include "stb_image.h"
+#include "stb_image_resize2.h"
 
 #define STB_EASY_FONT_IMPLEMENTATION
 #include "stb_easy_font.h"
@@ -274,46 +276,57 @@ inline void ThrowIfFailed(HRESULT hr) {
     }
 }
 
+
 void CreateTextureFromPixels()
 {
-    int screenW = GetSystemMetrics(SM_CXSCREEN);
-    int screenH = GetSystemMetrics(SM_CYSCREEN);
-    g_screenW = screenW;
-    g_screenH = screenH;
+    if (g_imgW <= 0 || g_imgH <= 0 || g_pixels.empty())
+        return;
 
-    // compute image vs screen aspect once
-    {
-        float imgAspect    = float(g_imgW) / float(g_imgH);
-        float screenAspect = float(g_screenW) / float(g_screenH);
-        g_baseScaleX = 1.0f;
-        g_baseScaleY = 1.0f;
-        if (imgAspect > screenAspect) {
-            // image is wider → pillarbox vertically
-            g_baseScaleY = screenAspect / imgAspect;
-        } else {
-            // image taller → letterbox horizontally
-            g_baseScaleX = imgAspect / screenAspect;
-        }
+    // 1) Clamp size (keep aspect) only if needed
+    constexpr int kMaxTexDim = 16384;
+    const int srcW = g_imgW, srcH = g_imgH;
+    int dstW = srcW, dstH = srcH;
+
+    if (srcW > kMaxTexDim || srcH > kMaxTexDim) {
+        const double sx = double(kMaxTexDim) / double(srcW);
+        const double sy = double(kMaxTexDim) / double(srcH);
+        const double s  = (sx < sy) ? sx : sy;
+        dstW = std::max(1, int(std::floor(srcW * s)));
+        dstH = std::max(1, int(std::floor(srcH * s)));
     }
-    // reset zoom & pan
-    // g_zoom       = g_targetZoom = 1.0f;
-    // g_offX       = g_targetOffX = 0.0f;
-    // g_offY       = g_targetOffY = 0.0f;
-    
-    if (g_pixels.empty()) return;
 
-    // 1) Describe the texture
+    // 2) Optional CPU resize (only if we actually clamped)
+    const uint8_t* uploadData = g_pixels.data();
+    std::vector<uint8_t> resized; // keep alive until copy completes
+    if (dstW != srcW || dstH != srcH) {
+        resized.resize(size_t(dstW) * size_t(dstH) * 4);
+
+        // v2 API signature:
+        // stbir_resize_uint8_srgb(in, w, h, strideB, out, W, H, strideB, STBIR_RGBA)
+        stbir_resize_uint8_srgb(
+            g_pixels.data(), srcW, srcH, srcW * 4,
+            resized.data(),  dstW, dstH, dstW * 4,
+            STBIR_RGBA
+        );
+
+        uploadData = resized.data();
+    }
+
+    OutputDebugStringA("CreateTextureFromPixels called\n");
+
+    // 3) Create DEFAULT heap texture (dstW/dstH <= 16384)
     D3D12_RESOURCE_DESC texDesc = {};
     texDesc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    texDesc.Width            = UINT64(g_imgW);
-    texDesc.Height           = UINT(g_imgH);
+    texDesc.Width            = static_cast<UINT64>(dstW);
+    texDesc.Height           = static_cast<UINT>(dstH);
     texDesc.DepthOrArraySize = 1;
-    texDesc.MipLevels        = 1;
-    texDesc.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
-    texDesc.SampleDesc.Count = 1;
+    texDesc.MipLevels        = 1; // (set >1 if you add mips later)
+    texDesc.Format           = DXGI_FORMAT_R8G8B8A8_UNORM; // keep your format
+    texDesc.SampleDesc       = {1, 0};
+    texDesc.Layout           = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    texDesc.Flags            = D3D12_RESOURCE_FLAG_NONE;
 
-    // 2) Create default-heap texture
-    ComPtr<ID3D12Resource> tex;
+    Microsoft::WRL::ComPtr<ID3D12Resource> tex;
     ThrowIfFailed(g_device->CreateCommittedResource(
         &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
         D3D12_HEAP_FLAG_NONE,
@@ -323,9 +336,9 @@ void CreateTextureFromPixels()
         IID_PPV_ARGS(&tex)
     ));
 
-    // 3) Create upload-heap
-    UINT64 uploadSize = GetRequiredIntermediateSize(tex.Get(), 0, 1);
-    ComPtr<ID3D12Resource> uploadHeap;
+    // 4) Create UPLOAD heap for the copy
+    const UINT64 uploadSize = GetRequiredIntermediateSize(tex.Get(), 0, 1);
+    Microsoft::WRL::ComPtr<ID3D12Resource> uploadHeap;
     ThrowIfFailed(g_device->CreateCommittedResource(
         &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
         D3D12_HEAP_FLAG_NONE,
@@ -335,54 +348,57 @@ void CreateTextureFromPixels()
         IID_PPV_ARGS(&uploadHeap)
     ));
 
-    // 4) Prepare the subresource
-    D3D12_SUBRESOURCE_DATA sub = {};
-    sub.pData      = g_pixels.data();
-    sub.RowPitch   = SIZE_T(g_imgW) * 4;
-    sub.SlicePitch = sub.RowPitch * g_imgH;
-
-    // 5) Record copy & barrier
-    ComPtr<ID3D12CommandAllocator> tmpAlloc;
+    // 5) Record copy on a throwaway allocator/list (NO globals touched)
+    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> alloc;
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> list;
     ThrowIfFailed(g_device->CreateCommandAllocator(
-        D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&tmpAlloc)
-    ));
-    ComPtr<ID3D12GraphicsCommandList> tmpList;
+        D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc)));
     ThrowIfFailed(g_device->CreateCommandList(
         0, D3D12_COMMAND_LIST_TYPE_DIRECT,
-        tmpAlloc.Get(), nullptr,
-        IID_PPV_ARGS(&tmpList)
-    ));
-    UpdateSubresources(tmpList.Get(), tex.Get(), uploadHeap.Get(),
-                       0, 0, 1, &sub);
-    tmpList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-        tex.Get(),
-        D3D12_RESOURCE_STATE_COPY_DEST,
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
-    ));
-    ThrowIfFailed(tmpList->Close());
+        alloc.Get(), nullptr, IID_PPV_ARGS(&list)));
 
-    // 6) Execute & fence-sync
-    g_cmdQueue->ExecuteCommandLists(1,
-        reinterpret_cast<ID3D12CommandList* const*>(tmpList.GetAddressOf())
-    );
-    g_fenceValue++;
-    ThrowIfFailed(g_cmdQueue->Signal(g_fence.Get(), g_fenceValue));
-    ThrowIfFailed(g_fence->SetEventOnCompletion(g_fenceValue, g_fenceEvent));
-    WaitForSingleObject(g_fenceEvent, INFINITE);
+    D3D12_SUBRESOURCE_DATA sub = {};
+    sub.pData      = uploadData;
+    sub.RowPitch   = SIZE_T(dstW) * 4;
+    sub.SlicePitch = SIZE_T(dstW) * SIZE_T(dstH) * 4;
 
-    // 7) Create the SRV
+    UpdateSubresources(list.Get(), tex.Get(), uploadHeap.Get(), 0, 0, 1, &sub);
+    list->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+        tex.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
+    ThrowIfFailed(list->Close());
+
+    ID3D12CommandList* lists[] = { list.Get() };
+    g_cmdQueue->ExecuteCommandLists(1, lists);
+
+    // 6) **Local** fence to wait for the copy (prevents stutter/deadlocks)
+    Microsoft::WRL::ComPtr<ID3D12Fence> localFence;
+    ThrowIfFailed(g_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&localFence)));
+    HANDLE localEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    if (!localEvent) { throw std::runtime_error("CreateEvent failed"); }
+
+    const UINT64 fenceValue = 1;
+    ThrowIfFailed(g_cmdQueue->Signal(localFence.Get(), fenceValue));
+    ThrowIfFailed(localFence->SetEventOnCompletion(fenceValue, localEvent));
+    WaitForSingleObject(localEvent, INFINITE);
+    CloseHandle(localEvent);
+
+    // 7) Create/overwrite SRV in your SRV heap
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srvDesc.Format                  = texDesc.Format;
     srvDesc.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Texture2D.MipLevels     = 1;
+
     g_device->CreateShaderResourceView(
         tex.Get(), &srvDesc,
         g_srvHeap->GetCPUDescriptorHandleForHeapStart()
     );
 
-    // 8) Store globally
+    // 8) Publish texture
     g_texture = tex;
+
+    // uploadHeap/alloc/list go out of scope here (safe after fence)
 }
 
 void CreateTextPipeline()
@@ -1291,96 +1307,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
     CreateTextPipeline();
 
     // ——— 13) Create and upload the texture (with debug) ———
-    if (!g_pixels.empty()) {
-
-        // Describe the texture
-        D3D12_RESOURCE_DESC texDesc = {};
-        texDesc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        texDesc.Width            = UINT64(g_imgW);
-        texDesc.Height           = UINT(g_imgH);
-        texDesc.DepthOrArraySize = 1;
-        texDesc.MipLevels        = 1;
-        texDesc.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
-        texDesc.SampleDesc.Count = 1;
-
-        // 8.2: Create default‐heap texture
-        ComPtr<ID3D12Resource> tex;
-        ThrowIfFailed(g_device->CreateCommittedResource(
-            &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
-            D3D12_HEAP_FLAG_NONE,
-            &texDesc,
-            D3D12_RESOURCE_STATE_COPY_DEST,
-            nullptr,
-            IID_PPV_ARGS(&tex)
-        ));
-
-        // 8.3: Create upload‐heap
-        UINT64 uploadSize = GetRequiredIntermediateSize(tex.Get(), 0, 1);
-        ComPtr<ID3D12Resource> uploadHeap;
-        ThrowIfFailed(g_device->CreateCommittedResource(
-            &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
-            D3D12_HEAP_FLAG_NONE,
-            &CD3DX12_RESOURCE_DESC::Buffer(uploadSize),
-            D3D12_RESOURCE_STATE_GENERIC_READ,
-            nullptr,
-            IID_PPV_ARGS(&uploadHeap)
-        ));
-
-        // 8.4: Prepare subresource data
-        D3D12_SUBRESOURCE_DATA sub = {};
-        sub.pData      = g_pixels.data();
-        sub.RowPitch   = SIZE_T(g_imgW) * 4;
-        sub.SlicePitch = sub.RowPitch * g_imgH;
-
-        // 8.5: Record copy & barrier
-        ComPtr<ID3D12CommandAllocator> tmpAlloc;
-        ThrowIfFailed(g_device->CreateCommandAllocator(
-            D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&tmpAlloc)
-        ));
-        ComPtr<ID3D12GraphicsCommandList> tmpList;
-        ThrowIfFailed(g_device->CreateCommandList(
-            0, D3D12_COMMAND_LIST_TYPE_DIRECT,
-            tmpAlloc.Get(), nullptr,
-            IID_PPV_ARGS(&tmpList)
-        ));
-        UpdateSubresources(tmpList.Get(), tex.Get(), uploadHeap.Get(),
-                        0, 0, 1, &sub);
-
-        tmpList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-            tex.Get(),
-            D3D12_RESOURCE_STATE_COPY_DEST,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
-        ));
-
-        ThrowIfFailed(tmpList->Close());
-
-        // 8.7: Execute & fence‐sync
-        g_cmdQueue->ExecuteCommandLists(1,
-            reinterpret_cast<ID3D12CommandList* const*>(tmpList.GetAddressOf())
-        );
-
-        // fence
-        g_fenceValue++;
-        ThrowIfFailed(g_cmdQueue->Signal(g_fence.Get(), g_fenceValue));
-        ThrowIfFailed(g_fence->SetEventOnCompletion(g_fenceValue, g_fenceEvent));
-        WaitForSingleObject(g_fenceEvent, INFINITE);
-
-        // 8.9: Create the SRV
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.Format                  = texDesc.Format;
-        srvDesc.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srvDesc.Texture2D.MipLevels     = 1;
-        g_device->CreateShaderResourceView(
-            tex.Get(), &srvDesc,
-            g_srvHeap->GetCPUDescriptorHandleForHeapStart()
-        );
-
-        // 8.10: Store in global
-        g_texture = tex;
-    }
-
-
     if (!g_pixels.empty()) {
         CreateTextureFromPixels();
     }
