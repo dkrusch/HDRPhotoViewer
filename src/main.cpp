@@ -17,12 +17,21 @@
 #include <cstdio>           // for FILE*
 #include <chrono>    // for steady_clock
 
+#include <windows.h>
+#include <shobjidl.h>   // IFileDialog
+#include <wrl/client.h>
+#include <filesystem>
+#include <vector>
+#include <unordered_set>
+#include <algorithm>
+#include <ShellScalingAPI.h>   // or <Shcore.h> on some SDKs
+#pragma comment(lib, "Shcore.lib")
+using Microsoft::WRL::ComPtr;
+
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
-<<<<<<< HEAD
-=======
 #define STB_EASY_FONT_IMPLEMENTATION
 #include "stb_easy_font.h"
 
@@ -30,7 +39,6 @@
 #undef max
 #undef min
 
->>>>>>> info-and-drag
 using Microsoft::WRL::ComPtr;
 
 // ---------------------------------------------
@@ -51,8 +59,6 @@ UINT                         g_rtvDescSize;
 UINT                         g_frameIndex = 0;
 UINT64                       g_fenceValue = 0;
 HANDLE                       g_fenceEvent = nullptr;
-<<<<<<< HEAD
-=======
 // text overlay pipeline objects
 Microsoft::WRL::ComPtr<ID3D12RootSignature> g_textRootSig;
 Microsoft::WRL::ComPtr<ID3D12PipelineState> g_textPSO;
@@ -66,7 +72,6 @@ UINT  g_textIBCapacity = 0;
 
 
 
->>>>>>> info-and-drag
 
 // Global variables for sorting image array
 enum class SortMode { ByName, ByDateModified, ByDateCreated };
@@ -80,8 +85,6 @@ static int                       g_currentFileIndex = 0;
 static std::chrono::steady_clock::time_point g_lastMouseMove;
 static bool g_cursorHidden = false;
 
-<<<<<<< HEAD
-=======
 static std::wstring HumanSize(uint64_t bytes) {
     const wchar_t* u[] = { L"B", L"KB", L"MB", L"GB", L"TB" };
     double s = double(bytes); int i = 0;
@@ -118,7 +121,6 @@ static std::string BuildInfoLine(const std::wstring& path) {
 }
 
 
->>>>>>> info-and-drag
 // Image data globals
 std::vector<uint8_t>         g_pixels;
 int                          g_imgW = 0, g_imgH = 0;
@@ -132,15 +134,12 @@ float g_offY = 0.0f;
 float g_targetOffX = 0.0f;
 float g_targetOffY = 0.0f;
 
-<<<<<<< HEAD
-=======
 // Panning state
 static bool g_isPanning = false;
 static int  g_panLastX  = 0;
 static int  g_panLastY  = 0;
 
 
->>>>>>> info-and-drag
 int g_screenW = 0;
 int g_screenH = 0;
 
@@ -148,15 +147,12 @@ int g_screenH = 0;
 float  g_baseScaleX = 1.0f;
 float  g_baseScaleY = 1.0f;
 
-<<<<<<< HEAD
-=======
 static void UpdateClientSize(HWND hWnd) {
     RECT rc; GetClientRect(hWnd, &rc);
     g_screenW = std::max<int>(1, rc.right  - rc.left);
     g_screenH = std::max<int>(1, rc.bottom - rc.top);
 }
 
->>>>>>> info-and-drag
 // Full‐screen triangle shaders (will draw your image later)
 static const char* g_VS = R"(
 cbuffer TransformCB : register(b0)
@@ -195,11 +191,6 @@ VSOut VSMain(uint vid : SV_VertexID)
 }
 )";
 
-<<<<<<< HEAD
-
-
-=======
->>>>>>> info-and-drag
 static const char* g_PS = R"(
 struct VSOut { float4 pos : SV_POSITION; float2 uv : TEXCOORD; };
 
@@ -213,8 +204,6 @@ float4 PSMain(VSOut vsIn) : SV_TARGET
 }
 )";
 
-<<<<<<< HEAD
-=======
 // ==== text overlay shaders (pixel-space triangles, solid color) ====
 static const char* g_VS_Text = R"(
 cbuffer ScreenCB : register(b0) { float2 invScreen; };
@@ -240,9 +229,29 @@ static D3D12_INPUT_ELEMENT_DESC g_TextIL[] = {
     { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 8,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
 };
 
+static void EnablePerMonitorV2DpiAwarenessEarly() {
+    // Prefer Per-Monitor V2 on Win10+; fall back gracefully if unavailable.
+    HMODULE user32 = LoadLibraryW(L"user32.dll");
+    if (user32) {
+        using SetCtxFn = BOOL (WINAPI*)(DPI_AWARENESS_CONTEXT);
+        if (auto SetProcessDpiAwarenessContext =
+                reinterpret_cast<SetCtxFn>(GetProcAddress(user32, "SetProcessDpiAwarenessContext"))) {
+            if (SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) return;
+            SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
+            return;
+        }
+    }
+    // Optional Win8.1 fallback (ok to omit if you only target Win10+):
+    HMODULE shcore = LoadLibraryW(L"Shcore.dll");
+    if (shcore) {
+        using SetProcAwFn = HRESULT (WINAPI*)(PROCESS_DPI_AWARENESS);
+        if (auto SetProcessDpiAwareness =
+                reinterpret_cast<SetProcAwFn>(GetProcAddress(shcore, "SetProcessDpiAwareness"))) {
+            SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
+        }
+    }
+}
 
-
->>>>>>> info-and-drag
 // Simple HRESULT checker (used by UpdateSubresources block)
 inline void ThrowIfFailed(HRESULT hr) {
     if (hr == DXGI_ERROR_DEVICE_REMOVED) {
@@ -376,8 +385,6 @@ void CreateTextureFromPixels()
     g_texture = tex;
 }
 
-<<<<<<< HEAD
-=======
 void CreateTextPipeline()
 {
     // root sig: 2 float constants (invScreen)
@@ -555,7 +562,6 @@ void DrawOverlayText(ID3D12GraphicsCommandList* cl, const char* text,
 }
 
 
->>>>>>> info-and-drag
 // ------------------------------------------------
 // Load an image from disk into g_pixels, g_imgW, g_imgH
 bool LoadImage(const std::wstring& wpath) {
@@ -663,49 +669,74 @@ auto sortFiles = [&](){
     }
 };
 
-// Returns true if we successfully opened & loaded an image.
+static bool HasExt(const std::wstring& extLower) {
+    static const std::unordered_set<std::wstring> kExts = {
+        L".png", L".jpg", L".jpeg"
+    };
+    return kExts.count(extLower) != 0;
+}
+
 bool OpenFileDialogAndLoad()
 {
-    // 1) File-open dialog
-    OPENFILENAMEW ofn{};
-    wchar_t szFile[MAX_PATH]{};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.lpstrFilter = L"Images\0*.jpg;*.png\0All Files\0*.*\0";
-    ofn.lpstrFile   = szFile;
-    ofn.nMaxFile    = MAX_PATH;
+    // Init COM for the file dialog
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    const bool didInitCOM = SUCCEEDED(hr);
 
-    if (!GetOpenFileNameW(&ofn))
-        return false;    // user cancelled or error
+    ComPtr<IFileDialog> dlg;
+    hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg));
+    if (FAILED(hr)) { if (didInitCOM) CoUninitialize(); return false; }
 
-    // --- enumerate all images in this folder ---
+    // Filters: only PNG and JPG
+    COMDLG_FILTERSPEC filters[] = {
+        { L"Images (png, jpg)", L"*.png;*.jpg;*.jpeg" },
+        { L"All Files", L"*.*" }
+    };
+    dlg->SetFileTypes(ARRAYSIZE(filters), filters);
+    dlg->SetFileTypeIndex(1); // default to Images
+    dlg->SetOptions(FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST);
+
+    hr = dlg->Show(nullptr);
+    if (hr == HRESULT_FROM_WIN32(ERROR_CANCELLED)) { if (didInitCOM) CoUninitialize(); return false; }
+    if (FAILED(hr)) { if (didInitCOM) CoUninitialize(); return false; }
+
+    ComPtr<IShellItem> item;
+    if (FAILED(dlg->GetResult(&item))) { if (didInitCOM) CoUninitialize(); return false; }
+
+    PWSTR pszPath = nullptr;
+    if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &pszPath))) { if (didInitCOM) CoUninitialize(); return false; }
+
+    std::wstring selectedPath(pszPath);
+    CoTaskMemFree(pszPath);
+
+    // Enumerate PNG/JPG images in same folder
     namespace fs = std::filesystem;
-    fs::path selectedPath(szFile);
-    auto folder = selectedPath.parent_path();
+    fs::path selected(selectedPath);
+    fs::path folder = selected.parent_path();
 
     g_fileList.clear();
-    for (auto& ent : fs::directory_iterator(folder)) {
-        if (!ent.is_regular_file()) continue;
-        auto ext = ent.path().extension().wstring();
+    std::error_code ec;
+    for (fs::directory_iterator it(folder, ec), end; it != end; it.increment(ec)) {
+        if (ec) break;
+        if (!it->is_regular_file(ec)) continue;
+        auto p = it->path();
+        std::wstring ext = p.extension().wstring();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
-        if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" ||
-            ext == L".bmp" || ext == L".tga") {
-            g_fileList.push_back(ent.path().wstring());
-        }
+        if (HasExt(ext)) g_fileList.push_back(p.wstring());
     }
 
     sortFiles();
 
-    auto it = std::find(g_fileList.begin(), g_fileList.end(), selectedPath.wstring());
-    g_currentFileIndex = (it == g_fileList.end()) 
-                           ? 0 
-                           : int(std::distance(g_fileList.begin(), it));
+    auto it = std::find(g_fileList.begin(), g_fileList.end(), selected.wstring());
+    g_currentFileIndex = (it == g_fileList.end()) ? 0 : int(std::distance(g_fileList.begin(), it));
 
-    // now load it
-    if (!LoadImage(g_fileList[g_currentFileIndex])) {
+    bool ok = false;
+    if (!g_fileList.empty()) ok = LoadImage(g_fileList[g_currentFileIndex]);
+
+    if (didInitCOM) CoUninitialize();
+    if (!ok) {
         MessageBoxW(nullptr, L"LoadImage failed", L"Error", MB_OK | MB_ICONERROR);
         return false;
     }
-    // CreateTextureFromPixels();
     return true;
 }
 
@@ -725,11 +756,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
             ShowCursor(TRUE);
             g_cursorHidden = false;
         }
-<<<<<<< HEAD
-=======
 
         UpdateClientSize(hWnd);
->>>>>>> info-and-drag
         
         // 1) Compute mouse in NDC (–1…+1)
         POINT pt; 
@@ -765,8 +793,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
         return 0;
     }
 
-<<<<<<< HEAD
-=======
     
     case WM_RBUTTONDOWN: {
         // Right click → move backward
@@ -818,7 +844,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
         return 0;
     }
 
->>>>>>> info-and-drag
     case WM_KEYDOWN:
     {
         if (wP == VK_ESCAPE) {
@@ -914,18 +939,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
 
             return 0;
         }
-<<<<<<< HEAD
-=======
         if (wP == 'I') {
             g_drawText = !g_drawText;
         }
->>>>>>> info-and-drag
 
         break;
     }
 
-<<<<<<< HEAD
-=======
     case WM_MBUTTONDOWN:
     {
         SetCapture(hWnd);                // capture mouse to window
@@ -945,7 +965,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
         return 0;
     }
 
->>>>>>> info-and-drag
     // When mouse moves unhide cursor
     case WM_MOUSEMOVE:
     {
@@ -955,10 +974,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
             ShowCursor(TRUE);
             g_cursorHidden = false;
         }
-<<<<<<< HEAD
-        break;
-    }
-=======
 
         if (g_isPanning)
         {
@@ -991,7 +1006,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
         }
         break;
         }
->>>>>>> info-and-drag
     
 
     }
@@ -1000,6 +1014,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
 
 // ------------------------------------------------
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
+
+    // Make the process DPI-aware BEFORE any windows/dialogs are created.
+    EnablePerMonitorV2DpiAwarenessEarly();
 
     // Run windows file open dialog
     if (!OpenFileDialogAndLoad())
@@ -1190,11 +1207,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
     // MessageBoxW(nullptr, L"Root signature created", L"Debug", MB_OK);
 
 
-<<<<<<< HEAD
-    // 11) Compile & create PSO (with explicit states + error check)
-=======
     // 12) Compile & create PSO (with explicit states + error check)
->>>>>>> info-and-drag
     {
         ComPtr<ID3DBlob> vsBlob, psBlob, errBlob;
         // Compile VS
@@ -1275,16 +1288,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
         }
     }
 
-<<<<<<< HEAD
-
-
-
-    // ——— 8) Create and upload the texture (with debug) ———
-=======
     CreateTextPipeline();
 
     // ——— 13) Create and upload the texture (with debug) ———
->>>>>>> info-and-drag
     if (!g_pixels.empty()) {
 
         // Describe the texture
@@ -1381,11 +1387,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
 
     g_lastMouseMove = std::chrono::steady_clock::now();
 
-<<<<<<< HEAD
-    // 9) Main loop: clear & present
-=======
     // 14) Main loop: clear & present
->>>>>>> info-and-drag
     MSG msg{};
     while (msg.message != WM_QUIT) {
         {
@@ -1483,21 +1485,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
             g_offY += (g_targetOffY - g_offY) * panLerp;
 
             // then clamp exactly as before
-<<<<<<< HEAD
-            float halfW = g_baseScaleX * g_zoom;
-            float halfH = g_baseScaleY * g_zoom;
-            float panLimitX = (halfW > 1) ? (halfW - 1) : 0;
-            float panLimitY = (halfH > 1) ? (halfH - 1) : 0;
-            g_offX = std::clamp(g_offX, -panLimitX, panLimitX);
-            g_offY = std::clamp(g_offY, -panLimitY, panLimitY);
-=======
             // float halfW = g_baseScaleX * g_zoom;
             // float halfH = g_baseScaleY * g_zoom;
             // float panLimitX = (halfW > 1) ? (halfW - 1) : 0;
             // float panLimitY = (halfH > 1) ? (halfH - 1) : 0;
             // g_offX = std::clamp(g_offX, -panLimitX, panLimitX);
             // g_offY = std::clamp(g_offY, -panLimitY, panLimitY);
->>>>>>> info-and-drag
 
             // 4) push the four transform constants:
             float t[4] = { g_baseScaleX * g_zoom,
@@ -1512,8 +1505,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
             cl->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
             cl->DrawInstanced(4, 1, 0, 0);
 
-<<<<<<< HEAD
-=======
             // Build the info line for current file and draw it
             if (!g_fileList.empty() && g_drawText) {
                 std::string info = BuildInfoLine(g_fileList[g_currentFileIndex]);
@@ -1521,7 +1512,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
                 // Offsets for a crude 1-pixel border (in screen-space pixels)
                 const float scale   = 3.0f;
                 const float cx      = 0.5f * g_screenW;
-                const float cy      = 0.05f * g_screenH;
+                const float cy      = 0.025f * g_screenH;
 
 
                 // Finally the main text in green on top
@@ -1529,7 +1520,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
             }
 
 
->>>>>>> info-and-drag
             // 8) Transition back into PRESENT
             cl->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
                 g_renderTargets[g_frameIndex].Get(),

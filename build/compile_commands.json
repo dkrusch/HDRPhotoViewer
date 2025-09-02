@@ -1,8 +1,0 @@
-[
-{
-  "directory": "C:/HDRViewer/build",
-  "command": "C:\\PROGRA~2\\MICROS~2\\2022\\BUILDT~1\\VC\\Tools\\MSVC\\1444~1.352\\bin\\Hostx64\\x64\\cl.exe  /nologo /TP -DUNICODE -D_UNICODE -IC:\\HDRViewer\\src -IC:\\HDRViewer\\third_party\\stb_image -IC:\\HDRViewer\\third_party\\d3dx12 /DWIN32 /D_WINDOWS /GR /EHsc /Zi /Ob0 /Od /RTC1 -std:c++17 -MDd /FoCMakeFiles\\HDRViewer.dir\\src\\main.cpp.obj /FdCMakeFiles\\HDRViewer.dir\\ /FS -c C:\\HDRViewer\\src\\main.cpp",
-  "file": "C:/HDRViewer/src/main.cpp",
-  "output": "C:/HDRViewer/build/CMakeFiles/HDRViewer.dir/src/main.cpp.obj"
-}
-]

@@ -2,11 +2,7 @@
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
-<<<<<<< HEAD
   set(CMAKE_INSTALL_PREFIX "C:/Program Files/HDRViewer")
-=======
-  set(CMAKE_INSTALL_PREFIX "C:/Program Files (x86)/HDRViewer")
->>>>>>> info-and-drag
 endif()
 string(REGEX REPLACE "/$" "" CMAKE_INSTALL_PREFIX "${CMAKE_INSTALL_PREFIX}")
 
@@ -16,11 +12,7 @@ if(NOT DEFINED CMAKE_INSTALL_CONFIG_NAME)
     string(REGEX REPLACE "^[^A-Za-z0-9_]+" ""
            CMAKE_INSTALL_CONFIG_NAME "${BUILD_TYPE}")
   else()
-<<<<<<< HEAD
     set(CMAKE_INSTALL_CONFIG_NAME "Release")
-=======
-    set(CMAKE_INSTALL_CONFIG_NAME "Debug")
->>>>>>> info-and-drag
   endif()
   message(STATUS "Install configuration: \"${CMAKE_INSTALL_CONFIG_NAME}\"")
 endif()

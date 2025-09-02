@@ -1,9 +1,5 @@
 {
     "files.associations": {
-<<<<<<< HEAD
-        "chrono": "cpp"
-    }
-=======
         "chrono": "cpp",
         "algorithm": "cpp",
         "atomic": "cpp",
@@ -69,5 +65,4 @@
     "cmake.generator": "Ninja",
     "cmake.buildType": "Release",
     "cmake.configureOnOpen": true
->>>>>>> info-and-drag
 }
