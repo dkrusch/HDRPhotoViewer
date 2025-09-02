@@ -21,6 +21,16 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+<<<<<<< HEAD
+=======
+#define STB_EASY_FONT_IMPLEMENTATION
+#include "stb_easy_font.h"
+
+#define NOMINMAX
+#undef max
+#undef min
+
+>>>>>>> info-and-drag
 using Microsoft::WRL::ComPtr;
 
 // ---------------------------------------------
@@ -41,6 +51,22 @@ UINT                         g_rtvDescSize;
 UINT                         g_frameIndex = 0;
 UINT64                       g_fenceValue = 0;
 HANDLE                       g_fenceEvent = nullptr;
+<<<<<<< HEAD
+=======
+// text overlay pipeline objects
+Microsoft::WRL::ComPtr<ID3D12RootSignature> g_textRootSig;
+Microsoft::WRL::ComPtr<ID3D12PipelineState> g_textPSO;
+
+// persistent overlay buffers
+Microsoft::WRL::ComPtr<ID3D12Resource> g_textVB, g_textIB;
+void* g_textVBMapped = nullptr;
+void* g_textIBMapped = nullptr;
+UINT  g_textVBCapacity = 0;
+UINT  g_textIBCapacity = 0;
+
+
+
+>>>>>>> info-and-drag
 
 // Global variables for sorting image array
 enum class SortMode { ByName, ByDateModified, ByDateCreated };
@@ -54,6 +80,45 @@ static int                       g_currentFileIndex = 0;
 static std::chrono::steady_clock::time_point g_lastMouseMove;
 static bool g_cursorHidden = false;
 
+<<<<<<< HEAD
+=======
+static std::wstring HumanSize(uint64_t bytes) {
+    const wchar_t* u[] = { L"B", L"KB", L"MB", L"GB", L"TB" };
+    double s = double(bytes); int i = 0;
+    while (s >= 1024.0 && i < 4) { s /= 1024.0; ++i; }
+    wchar_t buf[64]; swprintf_s(buf, L"%.2f %s", s, u[i]); return buf;
+}
+
+static std::wstring FileCreated(const std::wstring& path) {
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad)) return L"?";
+    SYSTEMTIME stUTC{}, stLocal{};
+    FileTimeToSystemTime(&fad.ftCreationTime, &stUTC);
+    SystemTimeToTzSpecificLocalTime(nullptr, &stUTC, &stLocal);
+    wchar_t buf[64];
+    swprintf_s(buf, L"%02d/%02d/%04d %02d:%02d",
+        stLocal.wMonth, stLocal.wDay, stLocal.wYear, stLocal.wHour, stLocal.wMinute);
+    return buf;
+}
+
+// quick narrow (ASCII-only; non-ASCII -> '?') for stb_easy_font
+static std::string NarrowAscii(const std::wstring& w) {
+    std::string s; s.reserve(w.size());
+    for (wchar_t c : w) s.push_back((c >= 32 && c < 127) ? char(c) : '?');
+    return s;
+}
+
+static std::string BuildInfoLine(const std::wstring& path) {
+    uint64_t sz = 0; try { sz = (uint64_t)std::filesystem::file_size(path); } catch(...) {}
+    std::wstring info = L"Filename: " +
+                        std::filesystem::path(path).filename().wstring() +
+                        L"  |  Size: " + HumanSize(sz) +
+                        L"  |  Date: " + FileCreated(path);
+    return NarrowAscii(info);
+}
+
+
+>>>>>>> info-and-drag
 // Image data globals
 std::vector<uint8_t>         g_pixels;
 int                          g_imgW = 0, g_imgH = 0;
@@ -67,6 +132,15 @@ float g_offY = 0.0f;
 float g_targetOffX = 0.0f;
 float g_targetOffY = 0.0f;
 
+<<<<<<< HEAD
+=======
+// Panning state
+static bool g_isPanning = false;
+static int  g_panLastX  = 0;
+static int  g_panLastY  = 0;
+
+
+>>>>>>> info-and-drag
 int g_screenW = 0;
 int g_screenH = 0;
 
@@ -74,6 +148,15 @@ int g_screenH = 0;
 float  g_baseScaleX = 1.0f;
 float  g_baseScaleY = 1.0f;
 
+<<<<<<< HEAD
+=======
+static void UpdateClientSize(HWND hWnd) {
+    RECT rc; GetClientRect(hWnd, &rc);
+    g_screenW = std::max<int>(1, rc.right  - rc.left);
+    g_screenH = std::max<int>(1, rc.bottom - rc.top);
+}
+
+>>>>>>> info-and-drag
 // Full‐screen triangle shaders (will draw your image later)
 static const char* g_VS = R"(
 cbuffer TransformCB : register(b0)
@@ -112,8 +195,11 @@ VSOut VSMain(uint vid : SV_VertexID)
 }
 )";
 
+<<<<<<< HEAD
 
 
+=======
+>>>>>>> info-and-drag
 static const char* g_PS = R"(
 struct VSOut { float4 pos : SV_POSITION; float2 uv : TEXCOORD; };
 
@@ -127,6 +213,36 @@ float4 PSMain(VSOut vsIn) : SV_TARGET
 }
 )";
 
+<<<<<<< HEAD
+=======
+// ==== text overlay shaders (pixel-space triangles, solid color) ====
+static const char* g_VS_Text = R"(
+cbuffer ScreenCB : register(b0) { float2 invScreen; };
+struct VSIn  { float2 pos : POSITION; float4 col : COLOR; };
+struct VSOut { float4 pos : SV_POSITION; float4 col : COLOR; };
+VSOut VSMain(VSIn i) {
+    float2 ndc = float2(i.pos.x * invScreen.x * 2.0f - 1.0f,
+                        1.0f - i.pos.y * invScreen.y * 2.0f);
+    VSOut o; o.pos = float4(ndc, 0, 1); o.col = i.col; return o;
+}
+)";
+
+static const char* g_PS_Text = R"(
+struct VSOut { float4 pos : SV_POSITION; float4 col : COLOR; };
+float4 PSMain(VSOut i) : SV_TARGET { return i.col; }
+)";
+
+struct TextVertex { float x, y; float r, g, b, a; };
+static bool g_drawText = false;
+
+static D3D12_INPUT_ELEMENT_DESC g_TextIL[] = {
+    { "POSITION", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 8,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+};
+
+
+
+>>>>>>> info-and-drag
 // Simple HRESULT checker (used by UpdateSubresources block)
 inline void ThrowIfFailed(HRESULT hr) {
     if (hr == DXGI_ERROR_DEVICE_REMOVED) {
@@ -260,6 +376,186 @@ void CreateTextureFromPixels()
     g_texture = tex;
 }
 
+<<<<<<< HEAD
+=======
+void CreateTextPipeline()
+{
+    // root sig: 2 float constants (invScreen)
+    D3D12_ROOT_PARAMETER param{};
+    param.ParameterType            = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    param.Constants.Num32BitValues = 2;
+    param.Constants.ShaderRegister = 0; // b0
+    param.ShaderVisibility         = D3D12_SHADER_VISIBILITY_VERTEX;
+
+    D3D12_ROOT_SIGNATURE_DESC rs{};
+    rs.NumParameters = 1;
+    rs.pParameters   = &param;
+    rs.Flags         = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    ComPtr<ID3DBlob> rsBlob, errBlob;
+    ThrowIfFailed(D3D12SerializeRootSignature(&rs, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, &errBlob));
+    ThrowIfFailed(g_device->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+                                                IID_PPV_ARGS(&g_textRootSig)));
+
+    // compile shaders
+    ComPtr<ID3DBlob> vs, ps, err;
+    ThrowIfFailed(D3DCompile(g_VS_Text, strlen(g_VS_Text), nullptr, nullptr, nullptr,
+                             "VSMain", "vs_5_0", 0, 0, &vs, &err));
+    ThrowIfFailed(D3DCompile(g_PS_Text, strlen(g_PS_Text), nullptr, nullptr, nullptr,
+                             "PSMain", "ps_5_0", 0, 0, &ps, &err));
+
+    // PSO (alpha-blended triangles)
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
+    pso.pRootSignature        = g_textRootSig.Get();
+    pso.VS                    = { vs->GetBufferPointer(), vs->GetBufferSize() };
+    pso.PS                    = { ps->GetBufferPointer(), ps->GetBufferSize() };
+    pso.InputLayout           = { g_TextIL, _countof(g_TextIL) };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets      = 1;
+    pso.RTVFormats[0]         = DXGI_FORMAT_R8G8B8A8_UNORM;
+    pso.SampleDesc.Count      = 1;
+    pso.SampleMask            = UINT_MAX;
+
+    D3D12_RASTERIZER_DESC rast{};
+    rast.FillMode = D3D12_FILL_MODE_SOLID;
+    rast.CullMode = D3D12_CULL_MODE_NONE;
+    rast.DepthClipEnable = TRUE;
+    pso.RasterizerState = rast;
+
+    D3D12_BLEND_DESC blend{};
+    auto& rt = blend.RenderTarget[0];
+    rt.BlendEnable           = TRUE;
+    rt.SrcBlend              = D3D12_BLEND_SRC_ALPHA;
+    rt.DestBlend             = D3D12_BLEND_INV_SRC_ALPHA;
+    rt.BlendOp               = D3D12_BLEND_OP_ADD;
+    rt.SrcBlendAlpha         = D3D12_BLEND_ONE;
+    rt.DestBlendAlpha        = D3D12_BLEND_INV_SRC_ALPHA;
+    rt.BlendOpAlpha          = D3D12_BLEND_OP_ADD;
+    rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    pso.BlendState = blend;
+
+    pso.DepthStencilState.DepthEnable   = FALSE;
+    pso.DepthStencilState.StencilEnable = FALSE;
+
+    ThrowIfFailed(g_device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&g_textPSO)));
+}
+
+void CreateOrResizeTextBuffers(UINT vbBytesNeeded, UINT ibBytesNeeded)
+{
+    auto makeBuf = [&](UINT bytes, ComPtr<ID3D12Resource>& res, void*& mapped, UINT& cap)
+    {
+        if (res && cap >= bytes) return;
+        cap = std::max(bytes, 256u * 1024u);
+        mapped = nullptr;
+        res.Reset();
+        ThrowIfFailed(g_device->CreateCommittedResource(
+            &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+            D3D12_HEAP_FLAG_NONE,
+            &CD3DX12_RESOURCE_DESC::Buffer(cap),
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&res)));
+        ThrowIfFailed(res->Map(0, nullptr, &mapped)); // keep mapped
+    };
+
+    makeBuf(vbBytesNeeded, g_textVB, g_textVBMapped, g_textVBCapacity);
+    makeBuf(ibBytesNeeded, g_textIB, g_textIBMapped, g_textIBCapacity);
+}
+
+// Centered + scaled overlay (no index buffer)
+void DrawOverlayText(ID3D12GraphicsCommandList* cl, const char* text,
+                     float scale /*e.g. 2.0f*/, float centerX, float centerY, 
+                     float r=1, float g=1, float b=1, float a=1)
+{
+    static char quadBuf[64 * 1024];
+    int num_quads = stb_easy_font_print(0.0f, 0.0f, (char*)text, nullptr,
+                                        quadBuf, sizeof(quadBuf));
+    if (num_quads <= 0) return;
+
+    struct V4 { float x,y,z,w; };
+    auto qv = reinterpret_cast<V4*>(quadBuf);
+
+    // 1) Compute the text bounding box in pixels (from stb output)
+    float minx = FLT_MAX, miny = FLT_MAX;
+    float maxx = -FLT_MAX, maxy = -FLT_MAX;
+    for (int q = 0; q < num_quads; ++q) {
+        for (int k = 0; k < 4; ++k) {
+            float x = qv[q*4 + k].x;
+            float y = qv[q*4 + k].y;
+            minx = (x < minx) ? x : minx;
+            miny = (y < miny) ? y : miny;
+            maxx = (x > maxx) ? x : maxx;
+            maxy = (y > maxy) ? y : maxy;
+        }
+    }
+    const float w = (maxx - minx) * scale;
+    const float h = (maxy - miny) * scale;
+
+    // 2) Top-left so that the text's center sits at (centerX, centerY)
+    const float baseX = centerX - w * 0.5f;
+    const float baseY = centerY - h * 0.5f;
+
+    // 3) Build 6 vertices per quad (two triangles), scaled & centered
+    std::vector<TextVertex> verts;
+    verts.reserve(size_t(num_quads) * 6);
+
+    auto addTri = [&](float x0,float y0,float x1,float y1,float x2,float y2) {
+        verts.push_back({ x0, y0, r,g,b,a });
+        verts.push_back({ x1, y1, r,g,b,a });
+        verts.push_back({ x2, y2, r,g,b,a });
+    };
+
+    for (int q = 0; q < num_quads; ++q) {
+        float x0 = baseX + (qv[q*4 + 0].x - minx) * scale;
+        float y0 = baseY + (qv[q*4 + 0].y - miny) * scale;
+        float x1 = baseX + (qv[q*4 + 1].x - minx) * scale;
+        float y1 = baseY + (qv[q*4 + 1].y - miny) * scale;
+        float x2 = baseX + (qv[q*4 + 2].x - minx) * scale;
+        float y2 = baseY + (qv[q*4 + 2].y - miny) * scale;
+        float x3 = baseX + (qv[q*4 + 3].x - minx) * scale;
+        float y3 = baseY + (qv[q*4 + 3].y - miny) * scale;
+
+        // Tri 1: 0,1,2  |  Tri 2: 2,1,3
+        addTri(x0,y0, x1,y1, x2,y2);
+        addTri(x2,y2, x1,y1, x3,y3);
+    }
+
+    const UINT vbBytes = (UINT)(verts.size() * sizeof(TextVertex));
+
+    // persistent upload VB (re-use across frames)
+    if (!g_textVB || g_textVBCapacity < vbBytes) {
+        g_textVBCapacity = (std::max)(vbBytes, 256u * 1024u);
+        g_textVB.Reset();
+        g_textVBMapped = nullptr;
+        ThrowIfFailed(g_device->CreateCommittedResource(
+            &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+            D3D12_HEAP_FLAG_NONE,
+            &CD3DX12_RESOURCE_DESC::Buffer(g_textVBCapacity),
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&g_textVB)));
+        ThrowIfFailed(g_textVB->Map(0, nullptr, &g_textVBMapped));
+    }
+    std::memcpy(g_textVBMapped, verts.data(), vbBytes);
+
+    // set state for text
+    cl->SetPipelineState(g_textPSO.Get());
+    cl->SetGraphicsRootSignature(g_textRootSig.Get());
+
+    float invScreen[2] = { 1.0f / float(g_screenW), 1.0f / float(g_screenH) };
+    cl->SetGraphicsRoot32BitConstants(0, 2, invScreen, 0);
+
+    D3D12_VERTEX_BUFFER_VIEW vbv{
+        g_textVB->GetGPUVirtualAddress(), vbBytes, (UINT)sizeof(TextVertex)
+    };
+
+    cl->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    cl->IASetVertexBuffers(0, 1, &vbv);
+    cl->DrawInstanced((UINT)verts.size(), 1, 0, 0);
+}
+
+
+>>>>>>> info-and-drag
 // ------------------------------------------------
 // Load an image from disk into g_pixels, g_imgW, g_imgH
 bool LoadImage(const std::wstring& wpath) {
@@ -429,6 +725,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
             ShowCursor(TRUE);
             g_cursorHidden = false;
         }
+<<<<<<< HEAD
+=======
+
+        UpdateClientSize(hWnd);
+>>>>>>> info-and-drag
         
         // 1) Compute mouse in NDC (–1…+1)
         POINT pt; 
@@ -464,6 +765,60 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
         return 0;
     }
 
+<<<<<<< HEAD
+=======
+    
+    case WM_RBUTTONDOWN: {
+        // Right click → move backward
+        int dir = -1;
+        int n   = int(g_fileList.size());
+        g_currentFileIndex = (g_currentFileIndex + dir + n) % n;
+
+        if (LoadImage(g_fileList[g_currentFileIndex])) {
+            // Recompute aspect‐ratio letterboxing
+            float imgAspect    = float(g_imgW) / float(g_imgH);
+            float screenAspect = float(g_screenW) / float(g_screenH);
+            g_baseScaleX = g_baseScaleY = 1.0f;
+            if (imgAspect > screenAspect) {
+                // image is wider → pillarbox vertically
+                g_baseScaleY = screenAspect / imgAspect;
+            } else {
+                // image taller → letterbox horizontally
+                g_baseScaleX = imgAspect / screenAspect;
+            }
+
+            // Upload to GPU
+            CreateTextureFromPixels();
+        }
+        return 0;
+    }
+    
+    case WM_LBUTTONDOWN: {
+        // Left click → move forward
+        int dir = +1;
+        int n   = int(g_fileList.size());
+        g_currentFileIndex = (g_currentFileIndex + dir + n) % n;
+
+        if (LoadImage(g_fileList[g_currentFileIndex])) {
+            // Recompute aspect‐ratio letterboxing
+            float imgAspect    = float(g_imgW) / float(g_imgH);
+            float screenAspect = float(g_screenW) / float(g_screenH);
+            g_baseScaleX = g_baseScaleY = 1.0f;
+            if (imgAspect > screenAspect) {
+                // image is wider → pillarbox vertically
+                g_baseScaleY = screenAspect / imgAspect;
+            } else {
+                // image taller → letterbox horizontally
+                g_baseScaleX = imgAspect / screenAspect;
+            }
+
+            // Upload to GPU
+            CreateTextureFromPixels();
+        }
+        return 0;
+    }
+
+>>>>>>> info-and-drag
     case WM_KEYDOWN:
     {
         if (wP == VK_ESCAPE) {
@@ -559,10 +914,38 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
 
             return 0;
         }
+<<<<<<< HEAD
+=======
+        if (wP == 'I') {
+            g_drawText = !g_drawText;
+        }
+>>>>>>> info-and-drag
 
         break;
     }
 
+<<<<<<< HEAD
+=======
+    case WM_MBUTTONDOWN:
+    {
+        SetCapture(hWnd);                // capture mouse to window
+        g_isPanning = true;
+        g_panLastX = GET_X_LPARAM(lP);
+        g_panLastY = GET_Y_LPARAM(lP);
+        // optional: show a “move” cursor while panning
+        SetCursor(LoadCursor(nullptr, IDC_HAND));
+        return 0;
+    }
+
+    case WM_MBUTTONUP:
+    {
+        g_isPanning = false;
+        ReleaseCapture();
+        SetCursor(LoadCursor(nullptr, IDC_ARROW));
+        return 0;
+    }
+
+>>>>>>> info-and-drag
     // When mouse moves unhide cursor
     case WM_MOUSEMOVE:
     {
@@ -572,8 +955,43 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wP, LPARAM lP)
             ShowCursor(TRUE);
             g_cursorHidden = false;
         }
+<<<<<<< HEAD
         break;
     }
+=======
+
+        if (g_isPanning)
+        {
+            UpdateClientSize(hWnd); // keep g_screenW/H current
+
+            const int mx = GET_X_LPARAM(lP);
+            const int my = GET_Y_LPARAM(lP);
+            const int dx = mx - g_panLastX;
+            const int dy = my - g_panLastY;
+            g_panLastX = mx;
+            g_panLastY = my;
+
+            // Convert pixel delta -> NDC delta (–1..+1 across the screen)
+            const float ndc_dx =  2.0f * (float)dx / (float)g_screenW;
+            const float ndc_dy = -2.0f * (float)dy / (float)g_screenH; // flip Y
+
+            // Move the *target* offsets (your render loop already lerps to these)
+            g_targetOffX += ndc_dx;
+            g_targetOffY += ndc_dy;
+
+            // (optional) clamp here for snappier feel; otherwise frame loop clamps:
+            // float halfW = g_baseScaleX * g_targetZoom;
+            // float halfH = g_baseScaleY * g_targetZoom;
+            // float panLimitX = (halfW > 1.f) ? (halfW - 1.f) : 0.f;
+            // float panLimitY = (halfH > 1.f) ? (halfH - 1.f) : 0.f;
+            // g_targetOffX = std::clamp(g_targetOffX, -panLimitX, panLimitX);
+            // g_targetOffY = std::clamp(g_targetOffY, -panLimitY, panLimitY);
+
+            return 0;
+        }
+        break;
+        }
+>>>>>>> info-and-drag
     
 
     }
@@ -772,7 +1190,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
     // MessageBoxW(nullptr, L"Root signature created", L"Debug", MB_OK);
 
 
+<<<<<<< HEAD
     // 11) Compile & create PSO (with explicit states + error check)
+=======
+    // 12) Compile & create PSO (with explicit states + error check)
+>>>>>>> info-and-drag
     {
         ComPtr<ID3DBlob> vsBlob, psBlob, errBlob;
         // Compile VS
@@ -853,10 +1275,16 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
         }
     }
 
+<<<<<<< HEAD
 
 
 
     // ——— 8) Create and upload the texture (with debug) ———
+=======
+    CreateTextPipeline();
+
+    // ——— 13) Create and upload the texture (with debug) ———
+>>>>>>> info-and-drag
     if (!g_pixels.empty()) {
 
         // Describe the texture
@@ -953,7 +1381,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
 
     g_lastMouseMove = std::chrono::steady_clock::now();
 
+<<<<<<< HEAD
     // 9) Main loop: clear & present
+=======
+    // 14) Main loop: clear & present
+>>>>>>> info-and-drag
     MSG msg{};
     while (msg.message != WM_QUIT) {
         {
@@ -1051,12 +1483,21 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
             g_offY += (g_targetOffY - g_offY) * panLerp;
 
             // then clamp exactly as before
+<<<<<<< HEAD
             float halfW = g_baseScaleX * g_zoom;
             float halfH = g_baseScaleY * g_zoom;
             float panLimitX = (halfW > 1) ? (halfW - 1) : 0;
             float panLimitY = (halfH > 1) ? (halfH - 1) : 0;
             g_offX = std::clamp(g_offX, -panLimitX, panLimitX);
             g_offY = std::clamp(g_offY, -panLimitY, panLimitY);
+=======
+            // float halfW = g_baseScaleX * g_zoom;
+            // float halfH = g_baseScaleY * g_zoom;
+            // float panLimitX = (halfW > 1) ? (halfW - 1) : 0;
+            // float panLimitY = (halfH > 1) ? (halfH - 1) : 0;
+            // g_offX = std::clamp(g_offX, -panLimitX, panLimitX);
+            // g_offY = std::clamp(g_offY, -panLimitY, panLimitY);
+>>>>>>> info-and-drag
 
             // 4) push the four transform constants:
             float t[4] = { g_baseScaleX * g_zoom,
@@ -1071,6 +1512,24 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
             cl->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
             cl->DrawInstanced(4, 1, 0, 0);
 
+<<<<<<< HEAD
+=======
+            // Build the info line for current file and draw it
+            if (!g_fileList.empty() && g_drawText) {
+                std::string info = BuildInfoLine(g_fileList[g_currentFileIndex]);
+
+                // Offsets for a crude 1-pixel border (in screen-space pixels)
+                const float scale   = 3.0f;
+                const float cx      = 0.5f * g_screenW;
+                const float cy      = 0.05f * g_screenH;
+
+
+                // Finally the main text in green on top
+                DrawOverlayText(cl.Get(), info.c_str(), scale, cx, cy, 0,1,0,1.0f);
+            }
+
+
+>>>>>>> info-and-drag
             // 8) Transition back into PRESENT
             cl->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
                 g_renderTargets[g_frameIndex].Get(),
