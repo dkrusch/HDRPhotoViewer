@@ -357,6 +357,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="C:\HDRViewer\src\main.cpp" />
+    <ResourceCompile Include="C:\HDRViewer\app.rc" />
   </ItemGroup>
   <ItemGroup />
   <ItemGroup>
