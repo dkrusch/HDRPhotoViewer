@@ -1,7 +1,5 @@
 # HDRPhotoViewer
 
-# HDRPhotoViewer
-
 A simple photo viewer that uses the dx12 engine to render images as textures for nvidia hdr overlay to hook onto. Provides some basic commands to navigate and zoom in/out.
 
 ## Keyboard Commands
