@@ -59,6 +59,17 @@ build CMakeFiles\HDRViewer.dir\src\main.cpp.obj: CXX_COMPILER__HDRViewer_unscann
   TARGET_COMPILE_PDB = CMakeFiles\HDRViewer.dir\
   TARGET_PDB = C:\HDRViewer\HDRViewer.pdb
 
+build CMakeFiles\HDRViewer.dir\app.rc.res: RC_COMPILER__HDRViewer_unscanned_Debug C$:\HDRViewer\app.rc || cmake_object_order_depends_target_HDRViewer
+  CONFIG = Debug
+  DEFINES = -DUNICODE -D_UNICODE
+  DEP_FILE = CMakeFiles\HDRViewer.dir\app.rc.res.d
+  FLAGS = -DWIN32 -D_DEBUG
+  INCLUDES = -I C:\HDRViewer\src -I C:\HDRViewer\third_party\stb_image -I C:\HDRViewer\third_party\d3dx12
+  OBJECT_DIR = CMakeFiles\HDRViewer.dir
+  OBJECT_FILE_DIR = CMakeFiles\HDRViewer.dir
+  TARGET_COMPILE_PDB = CMakeFiles\HDRViewer.dir\
+  TARGET_PDB = C:\HDRViewer\HDRViewer.pdb
+
 
 # =============================================================================
 # Link build statements for EXECUTABLE target HDRViewer
@@ -67,7 +78,7 @@ build CMakeFiles\HDRViewer.dir\src\main.cpp.obj: CXX_COMPILER__HDRViewer_unscann
 #############################################
 # Link the executable C:\HDRViewer\HDRViewer.exe
 
-build C$:\HDRViewer\HDRViewer.exe: CXX_EXECUTABLE_LINKER__HDRViewer_Debug CMakeFiles\HDRViewer.dir\src\main.cpp.obj
+build C$:\HDRViewer\HDRViewer.exe: CXX_EXECUTABLE_LINKER__HDRViewer_Debug CMakeFiles\HDRViewer.dir\src\main.cpp.obj CMakeFiles\HDRViewer.dir\app.rc.res
   CONFIG = Debug
   FLAGS = /DWIN32 /D_WINDOWS /GR /EHsc /Zi /Ob0 /Od /RTC1 -MDd
   LINK_FLAGS = /machine:x64 /debug /INCREMENTAL /subsystem:windows

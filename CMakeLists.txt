@@ -38,3 +38,5 @@ set_target_properties(HDRViewer PROPERTIES
   PDB_OUTPUT_DIRECTORY              ${CMAKE_SOURCE_DIR}
   PDB_OUTPUT_DIRECTORY_RELEASE     ${TargetOut}
 )
+
+target_sources(HDRViewer PRIVATE app.rc)

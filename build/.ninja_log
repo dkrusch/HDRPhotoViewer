@@ -1,3 +1,4 @@
 # ninja log v7
-2	911	7784922130306428	CMakeFiles/HDRViewer.dir/src/main.cpp.obj	cf16997cb2e74048
-912	1124	7784922139397474	C:/HDRViewer/HDRViewer.exe	b1169d83e8afbbf2
+6	921	7785405693465944	CMakeFiles/HDRViewer.dir/src/main.cpp.obj	cf16997cb2e74048
+922	1048	7785405702615669	C:/HDRViewer/HDRViewer.exe	cebca2264651f588
+9	89	7785402064954080	CMakeFiles/HDRViewer.dir/app.rc.res	ccea3f18fcdb5fe9
