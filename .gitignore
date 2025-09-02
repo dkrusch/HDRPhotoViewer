@@ -1,0 +1,37 @@
+# Out-of-source CMake/VS builds
+/build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
+*.ninja
+*.ninja_deps
+*.ninja_log
+
+# MSVC/Linker outputs
+*.obj
+*.pdb
+*.ipdb
+*.iobj
+*.ilk
+*.exp
+*.lib
+*.idb
+
+# Binaries
+*.exe
+*.dll
+
+# Generated manifests/temps (keep your source app.manifest)
+intermediate.manifest
+*.lastbuildstate
+*.tlog
+*.log
+
+# VS user files
+*.vcxproj.user
+*.opensdf
+*.sdf
+*.sou
+*.suo
+*.ncb
